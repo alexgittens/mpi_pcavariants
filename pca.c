@@ -18,7 +18,6 @@ int main(int argc, char **argv) {
     herr_t status; 
     hsize_t offset[2], count[2], offset_out[2];
 
-
     /* MPI variables */
     int mpi_size, mpi_rank;
     MPI_Comm comm = MPI_COMM_WORLD;
@@ -121,6 +120,8 @@ int main(int argc, char **argv) {
         }
     }
     */
+
+    printf("Rank %d: loaded my data\n", mpi_rank);
 
     H5Dclose(dataset_id);
     H5Fclose(file_id);
