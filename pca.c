@@ -3,8 +3,8 @@
 #include <stdio.h>
 #include "cblas.h"
 
-//#define INFILENAME "/global/cscratch1/sd/gittens/CFSROhdf5/oceanTemps.hdf5"
-#define INFILENAME "test.hdf5"
+#define INFILENAME "/global/cscratch1/sd/gittens/CFSROhdf5/oceanTemps.hdf5"
+//#define INFILENAME "test.hdf5"
 #define DATASET "temperatures"
 
 void multiplyGramianChunk(double A[], double Omega[], double C[], double Scratch[], int rowsA, int colsA, int colsOmega); 
@@ -29,10 +29,10 @@ int main(int argc, char **argv) {
     MPI_Comm_rank(comm, &mpi_rank);
 
     /* Allocate the correct portion of the input to each processor */
-    //int numcols = 46715;
-    //int numrows = 6349676;
-    int numcols = 4;
-    int numrows = 10;
+    int numcols = 46715;
+    int numrows = 6349676;
+    //int numcols = 4;
+    //int numrows = 10;
 
     int rowsModSize = numrows/mpi_size;
     int numWithMoreRows = numrows % mpi_size;
@@ -47,84 +47,38 @@ int main(int argc, char **argv) {
     }
     printf("Rank %d: assigned %d rows, %d--%d\n", mpi_rank, mynumrows, startingrow, startingrow + mynumrows - 1);
 
-    // compute C = A'*B = A' * (A*Omega)
-    // compute C = A'*B
-    // a la https://software.intel.com/en-us/forums/intel-math-kernel-library/topic/280875
-    /*
-    int height = 2;
-    int numcols = 4;
-    int r = 3;
-    double * Alocal, * Scratch, * Clocal, * Omega;
-    Omega = (double *) malloc(numcols*r*sizeof(double));
-    Alocal = (double *) malloc(height*numcols*sizeof(double));
-    Scratch = (double *) malloc(height*r*sizeof(double));
-    Clocal = (double *) malloc(numcols*r*sizeof(double));
-
-    int rowIdx;
-    int colIdx;
-    for (rowIdx = 0; rowIdx < numcols; rowIdx = rowIdx + 1) { 
-        for(colIdx = 0; colIdx < r; colIdx = colIdx + 1) {
-            Omega[rowIdx*r + colIdx] = rowIdx + colIdx/2.0;
-            printf("Omega[%d][%d] = %f\n", rowIdx, colIdx, Omega[rowIdx*r + colIdx]);
-        }
-    }
-
-    for (rowIdx = 0; rowIdx < height; rowIdx = rowIdx + 1) { 
-        for(colIdx = 0; colIdx < numcols; colIdx = colIdx + 1) {
-            if (colIdx == 2 && rowIdx == 1) {
-                Alocal[rowIdx*numcols + colIdx] = 5; 
-            } else {
-                Alocal[rowIdx*numcols + colIdx] = rowIdx + 1;
-            }
-            printf("A[%d][%d] = %f\n", rowIdx, colIdx, Alocal[rowIdx*numcols + colIdx]);
-        }
-    }
-    multiplyGramianChunk(Alocal, Omega, Clocal, Scratch, height, numcols, r);
-
-    if(mpi_rank == 0) {
-        for (rowIdx = 0; rowIdx < numcols; rowIdx = rowIdx + 1) { 
-            for(colIdx = 0; colIdx < r; colIdx = colIdx + 1) {
-                printf("C[%d][%d] = %f\n", rowIdx, colIdx, Clocal[rowIdx*r + colIdx]);
-            }
-        }
-    }
-
-    */
-
-    /* Open the file */
-    file_id = H5Fopen(INFILENAME, H5F_ACC_RDONLY, H5P_DEFAULT);
-
     /* Load my portion of the data */
     double * Alocal = (double *) malloc( mynumrows * numcols * sizeof(double));
 
-    dataset_id = H5Dopen2(file_id, DATASET, H5P_DEFAULT);
-    dataspace = H5Dget_space(dataset_id);
-    offset[0] = startingrow;
-    offset[1] = 0;
-    count[0] = mynumrows;
-    count[1] = numcols;
-    status = H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, offset, NULL, count, NULL);
+    // Takes about 12 minutes to load the dataset
+    int rem;
+    int ioparallelism = 50;
+    for (rem = 0; rem < ioparallelism; rem = rem + 1) {
+        if (mpi_rank % ioparallelism == rem) {
+            // Open the file 
+            file_id = H5Fopen(INFILENAME, H5F_ACC_RDONLY, H5P_DEFAULT);
 
-    offset_out[0] = 0;
-    offset_out[1] = 0;
-    memspace = H5Screate_simple(2, count, NULL);
-    status = H5Sselect_hyperslab(memspace, H5S_SELECT_SET, offset_out, NULL, count, NULL);
-    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, memspace, dataspace, H5P_DEFAULT, Alocal);
+            dataset_id = H5Dopen2(file_id, DATASET, H5P_DEFAULT);
+            dataspace = H5Dget_space(dataset_id);
+            offset[0] = startingrow;
+            offset[1] = 0;
+            count[0] = mynumrows;
+            count[1] = numcols;
+            status = H5Sselect_hyperslab(dataspace, H5S_SELECT_SET, offset, NULL, count, NULL);
 
-    /*
-    int rowIdx, colIdx;
+            offset_out[0] = 0;
+            offset_out[1] = 0;
+            memspace = H5Screate_simple(2, count, NULL);
+            status = H5Sselect_hyperslab(memspace, H5S_SELECT_SET, offset_out, NULL, count, NULL);
+            status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, memspace, dataspace, H5P_DEFAULT, Alocal);
 
-    for (rowIdx = 0; rowIdx < mynumrows; rowIdx = rowIdx + 1) {
-        for (colIdx = 0; colIdx < numcols; colIdx = colIdx + 1) {
-            printf("A[%d][%d] = %f \n", rowIdx + startingrow, colIdx, Alocal[rowIdx*numcols + colIdx]);
+            printf("Rank %d: loaded my data\n", mpi_rank);
+
+            H5Dclose(dataset_id);
+            H5Fclose(file_id);
         }
-    }
-    */
-
-    printf("Rank %d: loaded my data\n", mpi_rank);
-
-    H5Dclose(dataset_id);
-    H5Fclose(file_id);
+        MPI_Barrier(comm);
+     }
 
     MPI_Finalize();
     return 0;
