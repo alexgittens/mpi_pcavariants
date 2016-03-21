@@ -1,4 +1,4 @@
 #!/bin/bash -l
-module load hdf5
-cc pca.c $HDF5_INCLUDE_OPTS -static -lhdf5 $HDF5_POST_LINK_OPTS
-srun ./a.out
+module load hdf5-parallel
+cc pca.c $HDF5_INCLUDE_OPTS -static -lhdf5 -larpack -L. $HDF5_POST_LINK_OPTS
+srun -u -n 5 ./a.out test.hdf5 temperatures 10 4 1
