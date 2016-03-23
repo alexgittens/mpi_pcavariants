@@ -35,7 +35,7 @@ int main(int argc, char **argv) {
     char * infilename, * datasetname;
 
     /* HDF5 API definitions */
-    hid_t plist_id, file_id, dataset_id, filespace, memspace; 
+    hid_t plist_id, daccess_id, file_id, dataset_id, filespace, memspace; 
     herr_t status; 
     hsize_t offset[2], count[2], offset_out[2];
 
@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
     plist_id = H5Pcreate(H5P_FILE_ACCESS);
     H5Pset_fapl_mpio(plist_id, comm, info);
 
-    file_id = H5Fopen(infilename, H5F_ACC_RDONLY, H5P_DEFAULT);
+    file_id = H5Fopen(infilename, H5F_ACC_RDONLY, plist_id);
     dataset_id = H5Dopen2(file_id, datasetname, H5P_DEFAULT);
 
     count[0] = numrows/mpi_size;
@@ -80,7 +80,9 @@ int main(int argc, char **argv) {
     offset_out[1] = 0;
     Alocal = (double *) malloc( count[0]*count[1]*sizeof(double));
     status = H5Sselect_hyperslab(memspace, H5S_SELECT_SET, offset_out, NULL, count, NULL);
-    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, memspace, filespace, H5P_DEFAULT, Alocal);
+    daccess_id = H5Pcreate(H5P_DATASET_XFER);
+    H5Pset_dxpl_mpio(daccess_id, H5FD_MPIO_COLLECTIVE);
+    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, memspace, filespace, daccess_id, Alocal);
 
     printf("Rank %d: loaded my data\n", mpi_rank);
 
