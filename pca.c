@@ -18,26 +18,28 @@ extern void dseupd_(int *rvec, char *HowMny, int *select,
                     int *ldv, int *iparam, int *ipntr,
                     double *workd, double *workl,
                     int *lworkl, int *info);
-
 // future optimizations: use memory-aligned mallocs
 
+void printvec(char * label, double * v);
+
 #define DEBUGATAFLAG 0
-#define DEBUG_DISTMATVEC_FLAG 1 
+#define DEBUG_DISTMATVEC_FLAG 1
 
 // Computes C = A'*(A*Omega)
 // Scratch should have the size of (A*Omega)
 void multiplyGramianChunk(double A[], double Omega[], double C[], double Scratch[], int rowsA, int colsA, int colsOmega); 
 
 // computes a distributed matrix vector product against v, and updates v: v <- A'*A*v
-void distributedMatVecProd(double v[]);
+void distributedGramianVecProd(double v[]);
 
 /* Local variables */
 int mpi_size, mpi_rank;
 MPI_Comm comm;
 MPI_Info info;
-double * Alocal, * Scratch, * Scratch2;
-int numcols, numrows, numeigs;
-int localrows, startingrow;
+double * Alocal; // contains the batch of rows for this processor
+double * Scratch, * Scratch2; //Scratch and Scratch2 are used in multiplyGramianChunk
+int numcols, numrows, numeigs; // number of columns and rows in A, PCs desired
+int localrows, startingrow; // number of rows on this processor, index of the first row on this processor (0-based)
 
 int main(int argc, char **argv) {
 
@@ -76,9 +78,9 @@ int main(int argc, char **argv) {
     file_id = H5Fopen(infilename, H5F_ACC_RDONLY, plist_id);
     dataset_id = H5Dopen2(file_id, datasetname, H5P_DEFAULT);
 
-    count[0] = numrows/mpi_size;
+    count[0] = localrows;
     count[1] = numcols;
-    offset[0] = mpi_rank * count[0];
+    offset[0] = mpi_rank * count[0]; // TODO: change for non-uniform row partitioning
     offset[1] = 0;
 
     filespace = H5Dget_space(dataset_id);
@@ -93,21 +95,23 @@ int main(int argc, char **argv) {
     H5Pset_dxpl_mpio(daccess_id, H5FD_MPIO_COLLECTIVE);
     status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, memspace, filespace, daccess_id, Alocal);
 
-    printf("Rank %d: loaded my data\n", mpi_rank);
+    //printf("Rank %d: loaded my data\n", mpi_rank);
 
     double * vector = (double *) malloc( numcols * sizeof(double));
     Scratch = (double *) malloc( numcols * sizeof(double));
     Scratch2 = (double *) malloc( numcols * sizeof(double));
+    double * singVals = (double *) malloc( numeigs * sizeof(double));
+    double * rightSingVecs = (double *) malloc( numeigs * numcols * sizeof(double));
 
     // Check that the distributed matrix-vector multiply against A^TA works
     if (DEBUGATAFLAG) { 
        // display rows so we can check they're loaded correctly
-       int rowIdx, colIdx;
-       for (rowIdx = 0; rowIdx < localrows; rowIdx = rowIdx + 1) {
-             for (colIdx = 0; colIdx < numcols; colIdx = colIdx + 1) {
-                printf("A[%d][%d] = %f \n", rowIdx + startingrow, colIdx, Alocal[rowIdx*numcols + colIdx]);
-            }
-        } 
+        int rowIdx;
+        char rowlabel[50];
+        for( rowIdx = 0; rowIdx < localrows; rowIdx = rowIdx + 1) {
+            sprintf("row %d, on process %d: ", rowIdx + startingrow, mpi_rank);
+            printvec(rowlabel, Alocal + rowIdx*numcols);
+        }
 
         // distribute the initial vector
         if (mpi_rank == 0) {
@@ -115,16 +119,16 @@ int main(int argc, char **argv) {
             for( idx = 0; idx < numcols; idx = idx + 1) {
                 vector[idx] = idx + 1;
             } 
+            printvec("test vector: ", vector);
         }
         MPI_Bcast(vector, numcols, MPI_DOUBLE, 0, comm);
 
         // distributed matrix-vector product
-        distributedMatVecProd(vector);
+        distributedGramianVecProd(vector);
 
        // display final product
-       int idx;
-       for (idx = 0; idx < numcols; idx = idx + 1) {
-            printf("A'*A x[%d]= %f \n", idx + 1, vector[idx]);
+       if (mpi_rank == 0) {
+           printvec(" A * test vector: ", vector);
        }
     }
 
@@ -153,97 +157,49 @@ int main(int argc, char **argv) {
                 &ncv, v, &numcols,
                 iparam, ipntr, workd,
                 workl, &lworkl, &arpack_info);
-        cblas_dcopy(numcols, workd + ipntr[0] - 1, 1, vector, 1);
+        cblas_dcopy(numcols, workd + ipntr[0] - 1, 1, vector, 1); 
     }
     MPI_Bcast(&ido, 1, MPI_INTEGER, 0, comm);
     MPI_Bcast(vector, numcols, MPI_DOUBLE, 0, comm);
 
     // keep calling ARPACK until done
     while(ido != 99) {
-            if (mpi_rank >= 0) {
+            if (mpi_rank == 0) {
                 printf("Return code %d\n", ido);
             }
-            if (ido == -1) {
-                // compute y = A * x to force starting vector into range of A
-                
-                if (DEBUG_DISTMATVEC_FLAG && mpi_rank == 0) {
-                    char buffer[20000];
-                    int nextpos = 0;
-                    nextpos = sprintf(buffer, "Input vector:\n");
-                    int idx;
-                    for(idx = 0; idx < numcols; idx = idx + 1) {
-                        sprintf(buffer + nextpos, "x[%d] = %f \n", idx + 1, vector[idx]);
-                    }
-                    printf(buffer);
-                }
-
-                distributedMatVecProd(vector);
+            if (ido == 1 || ido == -1) {
+                distributedGramianVecProd(vector);
                 if (mpi_rank == 0) {
-                    printf("Initialization step\n");
-                    cblas_dcopy(numcols, vector, 1, workd + ipntr[1] - 1, 1);
-                    dsaupd_(&ido, &bmat, &numcols, which,
-                            &numeigs, &tol, resid,
-                            &ncv, v, &numcols,
-                            iparam, ipntr, workd,
-                            workl, &lworkl, &arpack_info);
-                    cblas_dcopy(numcols, workd + ipntr[0] - 1, 1, vector, 1);
-                }
-                MPI_Bcast(vector, numcols, MPI_DOUBLE, 0, comm); 
-                
-                if (DEBUG_DISTMATVEC_FLAG && mpi_rank == 0) {
-                    char buffer[20000];
-                    int nextpos = 0;
-                    nextpos = sprintf(buffer, "Output vector:\n");
-                    int idx;
-                    for(idx = 0; idx < numcols; idx = idx + 1) {
-                        sprintf(buffer + nextpos, "x[%d] = %f \n", idx + 1, vector[idx]);
-                    }
-                    printf(buffer);
-                }
-
-            } else if (ido == 1) {
-                // compute y = A * x and z = x  
-                distributedMatVecProd(vector);
-                printf("Process %d done computing\n", mpi_rank);
-                MPI_Barrier(comm);
-                if (mpi_rank == 0) {
-                    printf("Matrix-vector product\n");
                     cblas_dcopy(numcols, vector, 1, workd + ipntr[1] - 1, 1); // y = A x
-                    cblas_dcopy(numcols, workd + ipntr[0] - 1, 1, workd + ipntr[1] - 1, 1); // z = x
-                    printf("Done cblas copies\n");
+                    if (DEBUG_DISTMATVEC_FLAG) { 
+                        printvec("Input vector: ", workd + ipntr[0] - 1); 
+                        printvec("Output vector: ", workd + ipntr[1] - 1);
+                    }
                     dsaupd_(&ido, &bmat, &numcols, which,
                             &numeigs, &tol, resid,
                             &ncv, v, &numcols,
                             iparam, ipntr, workd,
                             workl, &lworkl, &arpack_info);
-                    printf("Done arpack call\n");
                     cblas_dcopy(numcols, workd + ipntr[0] - 1, 1, vector, 1);
-                    printf("Done cblas copy\n");
                 }
                 MPI_Bcast(vector, numcols, MPI_DOUBLE, 0, comm); 
-                printf("process %d, done recieving updated vector\n", mpi_rank);
-                MPI_Barrier(comm);
             }
             MPI_Bcast(&ido, 1, MPI_INTEGER, 0, comm);
-            printf("process %d, done recieving updated ido\n", mpi_rank);
-            MPI_Barrier(comm);
     }
-    MPI_Barrier(comm);
 
     if (mpi_rank == 0) {
         int num_iters = iparam[8];
         int num_evals = iparam[4];
         printf("Used %d matrix-vector products to converge to %d eigenvalue\n", num_iters, num_evals);
+        printf("Return value: %d\n", arpack_info);
 
         int rvec = 1; // compute Ritz vectors
         char HowMny = 'A';
         int * select = (int * ) malloc(numeigs * sizeof(int));
-        double * eigvals = (double *) malloc( numeigs * sizeof(double));
-        double * eigvecs = (double *) malloc( numeigs * numcols * sizeof(double));
         double sigma = 0;
     
         dseupd_(&rvec, &HowMny, select,
-                eigvals, eigvecs, &numcols,
+                singVals, rightSingVecs, &numcols,
                 &sigma, &bmat, &numcols,
                 which, &numeigs, &tol, 
                 resid, &ncv, v,
@@ -253,16 +209,15 @@ int main(int argc, char **argv) {
 
         // eigenvalues and eigenvectors are returned in ascending order
         // eigenvectors are returned in column major form
-        printf("Top eigenvalue: %f\n", eigvals[numeigs-1]);
-        printf("Top eigenvector: \n");
-        int idx;
-        for( idx = 0; idx < numcols; idx = idx + 1) {
-            printf("x[%d] = %f\n", idx + 1, eigvecs[(numeigs - 1)*numcols + idx]);
+        int eigidx;
+        char labelbuf[50];
+        for( eigidx = 0; eigidx < numeigs; eigidx = eigidx + 1) {
+            printf("Eigenvalue %d: %f\n", eigidx + 1, singVals[numeigs - eigidx - 1]);
+            sprintf(labelbuf, "Eigenvector %d: ", eigidx + 1);
+            printvec(labelbuf, rightSingVecs + (numeigs - eigidx - 1)*numcols);
         }
 
         free(select);
-        free(eigvals);
-        free(eigvecs);
     }
 
     free(vector);
@@ -271,7 +226,6 @@ int main(int argc, char **argv) {
     free(workd);
     free(workl);
 
-    printf("Done with matrix-vec products\n");
     H5Pclose(daccess_id);
     H5Dclose(dataset_id);
     H5Sclose(memspace);
@@ -290,14 +244,33 @@ int main(int argc, char **argv) {
     return 0;
 }
 
-void distributedMatVecProd(double v[]) {
-    multiplyGramianChunk(Alocal, v, v, Scratch, numrows, numcols, 1); // write an appropriate mat-vec function
+// computes A^T*A*v and stores back in v
+void distributedGramianVecProd(double v[]) {
+    multiplyGramianChunk(Alocal, v, v, Scratch, numrows, numcols, 1); // TODO: write an appropriate mat-vec function instead of using the mat-mat function
     MPI_Allreduce(v, Scratch2, numcols, MPI_DOUBLE, MPI_SUM, comm);
     cblas_dcopy(numcols, Scratch2, 1, v, 1);
 }
+
+// computes A*mat and stores result on the rank 0 process in matProd (assumes the memory has already been allocated)
+// void distributedMatMatProd(double mat[], double matProd) {
+//     multiplyAChunk(Alocal, mat, mat, numrows, numcols, numeigs);
+//     MPI_Gather(mat, 
 
 /* computes A'*(A*Omega) = A*S , so Scratch must have size rowsA*colsOmega */
 void multiplyGramianChunk(double A[], double Omega[], double C[], double Scratch[], int rowsA, int colsA, int colsOmega) {
     cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, rowsA, colsOmega, colsA, 1.0, A, colsA, Omega, colsOmega, 0.0, Scratch, colsOmega);
     cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, colsA, colsOmega, rowsA, 1.0, A, colsA, Scratch, colsOmega, 0.0, C, colsOmega);
 }
+
+void printvec(char * label, double * v) {
+    char buffer[20000];
+    int nextpos = 0;
+    nextpos = sprintf(buffer, label);
+    int idx;
+    for(idx = 0; idx < numcols; idx = idx + 1) {
+        nextpos = nextpos + sprintf(buffer + nextpos, "%f, ", v[idx]);
+    }
+    sprintf(buffer + nextpos - 2, "\n");
+    printf(buffer);
+}
+
