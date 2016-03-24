@@ -109,7 +109,7 @@ int main(int argc, char **argv) {
         int rowIdx;
         char rowlabel[50];
         for( rowIdx = 0; rowIdx < localrows; rowIdx = rowIdx + 1) {
-            sprintf("row %d, on process %d: ", rowIdx + startingrow, mpi_rank);
+            sprintf(rowlabel, "row %d, on process %d: ", rowIdx + startingrow, mpi_rank);
             printvec(rowlabel, Alocal + rowIdx*numcols);
         }
 
@@ -220,6 +220,10 @@ int main(int argc, char **argv) {
         free(select);
     }
 
+    free(Alocal);
+    free(Scratch);
+    free(Scratch2);
+
     free(vector);
     free(resid);
     free(v);
@@ -233,20 +237,13 @@ int main(int argc, char **argv) {
     H5Pclose(plist_id);
     H5Fclose(file_id);
 
-    // Why do these frees cause segfaults?
-    //free(Alocal);
-    //free(Scratch);
-    //free(Scratch2);
-    
-    printf("Got here!\n");
-    // What causes a segfault here? I closed all the HDF5 objects
     MPI_Finalize();
     return 0;
 }
 
 // computes A^T*A*v and stores back in v
 void distributedGramianVecProd(double v[]) {
-    multiplyGramianChunk(Alocal, v, v, Scratch, numrows, numcols, 1); // TODO: write an appropriate mat-vec function instead of using the mat-mat function
+    multiplyGramianChunk(Alocal, v, v, Scratch, localrows, numcols, 1); // TODO: write an appropriate mat-vec function instead of using the mat-mat function
     MPI_Allreduce(v, Scratch2, numcols, MPI_DOUBLE, MPI_SUM, comm);
     cblas_dcopy(numcols, Scratch2, 1, v, 1);
 }
