@@ -32,14 +32,22 @@ void multiplyGramianChunk(double A[], double Omega[], double C[], double Scratch
 // computes a distributed matrix vector product against v, and updates v: v <- A'*A*v
 void distributedGramianVecProd(double v[]);
 
+// computes A*Omega and stores in C, Scratch should have dimensions of C
+void multiplyAChunk(double A[], double Omega[], double C[], double Scratch[], int rowsA, int colsA, int colsOmega);
+
+// computes A*mat and stores result on the rank 0 process in matProd
+void distributedMatMatProd(double mat[], double matProd[]);
+
 /* Local variables */
 int mpi_size, mpi_rank;
 MPI_Comm comm;
 MPI_Info info;
 double * Alocal; // contains the batch of rows for this processor
 double * Scratch, * Scratch2; //Scratch and Scratch2 are used in multiplyGramianChunk
+double * matProd, * Scratch3; //matProd is local A*V, Scratch3 is used in multiplyAChunk
 int numcols, numrows, numeigs; // number of columns and rows in A, PCs desired
 int localrows, startingrow; // number of rows on this processor, index of the first row on this processor (0-based)
+int * elementcounts, * elementoffsets; // for an n-by-k matrix, contains the number of matrix elements on each processor, indices of the first element on each processor (only on rank 0)
 
 int main(int argc, char **argv) {
 
@@ -66,8 +74,35 @@ int main(int argc, char **argv) {
     numeigs = atoi(argv[5]);
 
     /* Allocate the correct portion of the input to each processor */
-    localrows = numrows/mpi_size;
-    startingrow = localrows*mpi_rank;
+    int littlePartitionSize = numrows/mpi_size;
+    int bigPartitionSize = littlePartitionSize + 1;
+    int numLittlePartitions = mpi_size - numrows % mpi_size;
+    int numBigPartitions = numrows % mpi_size;
+
+    if (mpi_rank < numBigPartitions) {
+        localrows = bigPartitionSize;
+        startingrow = bigPartitionSize*mpi_rank;
+    } else {
+        localrows = littlePartitionSize;
+        startingrow = bigPartitionSize*numBigPartitions + 
+                      littlePartitionSize*(mpi_rank - numBigPartitions);
+    }
+
+    if (mpi_rank == 0) {
+        elementcounts = (int *) malloc( mpi_size * sizeof(int));
+        elementoffsets = (int *) malloc( mpi_size * sizeof(int));
+        int idx;
+        for(idx = 0; idx < numBigPartitions; idx = idx + 1) {
+            elementcounts[idx] = bigPartitionSize * numeigs;
+            elementoffsets[idx] = bigPartitionSize * numeigs * idx;
+        }
+        for(idx = numBigPartitions; idx < mpi_size; idx = idx + 1) {
+            elementcounts[idx] = littlePartitionSize * numeigs;
+            elementoffsets[idx] = bigPartitionSize * numeigs * numBigPartitions + 
+                              littlePartitionSize * numeigs * (idx - numBigPartitions);
+        }
+    }
+
     printf("Rank %d: assigned %d rows, %d--%d\n", mpi_rank, localrows, startingrow, startingrow + localrows - 1);
 
     /* Load my portion of the data */
@@ -100,6 +135,7 @@ int main(int argc, char **argv) {
     double * vector = (double *) malloc( numcols * sizeof(double));
     Scratch = (double *) malloc( numcols * sizeof(double));
     Scratch2 = (double *) malloc( numcols * sizeof(double));
+    Scratch3 = (double *) malloc( numrows * numeigs * sizeof(double));
     double * singVals = (double *) malloc( numeigs * sizeof(double));
     double * rightSingVecs = (double *) malloc( numeigs * numcols * sizeof(double));
 
@@ -230,6 +266,11 @@ int main(int argc, char **argv) {
     free(workd);
     free(workl);
 
+    if (mpi_rank == 0) {
+        free(elementcounts);
+        free(elementoffsets);
+    }
+
     H5Pclose(daccess_id);
     H5Dclose(dataset_id);
     H5Sclose(memspace);
@@ -249,9 +290,20 @@ void distributedGramianVecProd(double v[]) {
 }
 
 // computes A*mat and stores result on the rank 0 process in matProd (assumes the memory has already been allocated)
-// void distributedMatMatProd(double mat[], double matProd) {
-//     multiplyAChunk(Alocal, mat, mat, numrows, numcols, numeigs);
-//     MPI_Gather(mat, 
+void distributedMatMatProd(double mat[], double matProd[]) {
+    multiplyAChunk(Alocal, mat, mat, Scratch3, localrows, numcols, numeigs);
+    if (mpi_rank != 0) {
+        MPI_Gatherv(mat, localrows*numcols, MPI_DOUBLE, NULL, NULL, NULL, MPI_DOUBLE, 0, comm);
+    } else {
+        MPI_Gatherv(mat, localrows*numcols, MPI_DOUBLE, matProd, elementcounts, elementoffsets, MPI_DOUBLE, 0, comm);
+    }
+}
+
+// computes C = A*Omega, needs Scratch to have same dimensions as C
+void multiplyAChunk(double A[], double Omega[], double C[], double Scratch[], int rowsA, int colsA, int colsOmega) {
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, rowsA, colsOmega, colsA, 1.0, A, colsA, Omega, colsOmega, 0.0, Scratch, colsOmega);
+    cblas_dcopy(rowsA*colsOmega, Scratch, 1, C, 1);
+}
 
 /* computes A'*(A*Omega) = A*S , so Scratch must have size rowsA*colsOmega */
 void multiplyGramianChunk(double A[], double Omega[], double C[], double Scratch[], int rowsA, int colsA, int colsOmega) {
