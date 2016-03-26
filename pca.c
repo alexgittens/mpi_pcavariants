@@ -21,6 +21,8 @@ extern void dseupd_(int *rvec, char *HowMny, int *select,
 // future optimizations: use memory-aligned mallocs
 
 void printvec(char * label, double * v);
+void printmat(char * label, double * mat, int height, int width);
+void mattrans(const double * A, long m, long n, double * B);
 
 #define DEBUGATAFLAG 0
 #define DEBUG_DISTMATVEC_FLAG 1
@@ -33,7 +35,7 @@ void multiplyGramianChunk(double A[], double Omega[], double C[], double Scratch
 void distributedGramianVecProd(double v[]);
 
 // computes A*Omega and stores in C, Scratch should have dimensions of C
-void multiplyAChunk(double A[], double Omega[], double C[], double Scratch[], int rowsA, int colsA, int colsOmega);
+void multiplyAChunk(double A[], double Omega[], double C[], int rowsA, int colsA, int colsOmega);
 
 // computes A*mat and stores result on the rank 0 process in matProd
 void distributedMatMatProd(double mat[], double matProd[]);
@@ -43,8 +45,8 @@ int mpi_size, mpi_rank;
 MPI_Comm comm;
 MPI_Info info;
 double * Alocal; // contains the batch of rows for this processor
-double * Scratch, * Scratch2; //Scratch and Scratch2 are used in multiplyGramianChunk
-double * matProd, * Scratch3; //matProd is local A*V, Scratch3 is used in multiplyAChunk
+double * Scratch, * Scratch2, * Scratch3; //Scratch and Scratch2 are used in multiplyGramianChunk, Scratch3 in distributedMatMatProd
+double * AV;
 int numcols, numrows, numeigs; // number of columns and rows in A, PCs desired
 int localrows, startingrow; // number of rows on this processor, index of the first row on this processor (0-based)
 int * elementcounts, * elementoffsets; // for an n-by-k matrix, contains the number of matrix elements on each processor, indices of the first element on each processor (only on rank 0)
@@ -135,7 +137,7 @@ int main(int argc, char **argv) {
     double * vector = (double *) malloc( numcols * sizeof(double));
     Scratch = (double *) malloc( numcols * sizeof(double));
     Scratch2 = (double *) malloc( numcols * sizeof(double));
-    Scratch3 = (double *) malloc( numrows * numeigs * sizeof(double));
+    Scratch3 = (double *) malloc( localrows * numeigs * sizeof(double));
     double * singVals = (double *) malloc( numeigs * sizeof(double));
     double * rightSingVecs = (double *) malloc( numeigs * numcols * sizeof(double));
 
@@ -170,7 +172,7 @@ int main(int argc, char **argv) {
 
     // initial call to arpack
     int ido = 0;
-    int ncv = 2*numeigs;
+    int ncv = 2*numeigs > numcols ? numcols : 2*numeigs; // ncv > nev and ncv < n (but ncv >= 2*nev recommended)
     int maxiter = 30;
     double tol = 1e-13;
     double * resid = (double *) malloc( numcols * sizeof(double));
@@ -193,6 +195,7 @@ int main(int argc, char **argv) {
                 &ncv, v, &numcols,
                 iparam, ipntr, workd,
                 workl, &lworkl, &arpack_info);
+        //printf("Info : %d\n", arpack_info);
         cblas_dcopy(numcols, workd + ipntr[0] - 1, 1, vector, 1); 
     }
     MPI_Bcast(&ido, 1, MPI_INTEGER, 0, comm);
@@ -234,8 +237,9 @@ int main(int argc, char **argv) {
         int * select = (int * ) malloc(numeigs * sizeof(int));
         double sigma = 0;
     
+        double * svtranspose = (double *) malloc( numeigs * numcols * sizeof(double));
         dseupd_(&rvec, &HowMny, select,
-                singVals, rightSingVecs, &numcols,
+                singVals, svtranspose, &numcols,
                 &sigma, &bmat, &numcols,
                 which, &numeigs, &tol, 
                 resid, &ncv, v,
@@ -249,12 +253,32 @@ int main(int argc, char **argv) {
         char labelbuf[50];
         for( eigidx = 0; eigidx < numeigs; eigidx = eigidx + 1) {
             printf("Eigenvalue %d: %f\n", eigidx + 1, singVals[numeigs - eigidx - 1]);
-            sprintf(labelbuf, "Eigenvector %d: ", eigidx + 1);
-            printvec(labelbuf, rightSingVecs + (numeigs - eigidx - 1)*numcols);
+     //       sprintf(labelbuf, "Eigenvector %d: ", eigidx + 1);
+     //       printvec(labelbuf, svtranspose + (numeigs - eigidx - 1)*numcols);
         }
 
+    //    printmat("right singular vectors (in ascending order top to bottom)\n", svtranspose, numeigs, numcols);
+
+        mattrans(svtranspose, numeigs, numcols, rightSingVecs);
+
+        printmat("right singular vectors (in ascending order left to right)\n", rightSingVecs, numcols, numeigs);
+
+        free(svtranspose); 
         free(select);
     }
+    MPI_Bcast(rightSingVecs, numeigs*numcols, MPI_DOUBLE, 0, comm);
+
+    double * AV = (double *) malloc( numrows * numeigs * sizeof(double));
+    distributedMatMatProd(rightSingVecs, AV);
+
+    if (mpi_rank == 0) {
+        printmat("best low-rank approximation of A\n", AV, numrows, numeigs);
+    }
+
+    char labelbuf[80];
+    sprintf(labelbuf, "Process %d's copy of the right singular vectors:\n", mpi_rank);
+    printmat(labelbuf, rightSingVecs, numcols, numeigs);
+
 
     free(Alocal);
     free(Scratch);
@@ -291,18 +315,17 @@ void distributedGramianVecProd(double v[]) {
 
 // computes A*mat and stores result on the rank 0 process in matProd (assumes the memory has already been allocated)
 void distributedMatMatProd(double mat[], double matProd[]) {
-    multiplyAChunk(Alocal, mat, mat, Scratch3, localrows, numcols, numeigs);
+    multiplyAChunk(Alocal, mat, Scratch3, localrows, numcols, numeigs);
     if (mpi_rank != 0) {
-        MPI_Gatherv(mat, localrows*numcols, MPI_DOUBLE, NULL, NULL, NULL, MPI_DOUBLE, 0, comm);
+        MPI_Gatherv(Scratch3, localrows*numcols, MPI_DOUBLE, NULL, NULL, NULL, MPI_DOUBLE, 0, comm);
     } else {
-        MPI_Gatherv(mat, localrows*numcols, MPI_DOUBLE, matProd, elementcounts, elementoffsets, MPI_DOUBLE, 0, comm);
+        MPI_Gatherv(Scratch3, localrows*numcols, MPI_DOUBLE, matProd, elementcounts, elementoffsets, MPI_DOUBLE, 0, comm);
     }
 }
 
-// computes C = A*Omega, needs Scratch to have same dimensions as C
-void multiplyAChunk(double A[], double Omega[], double C[], double Scratch[], int rowsA, int colsA, int colsOmega) {
-    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, rowsA, colsOmega, colsA, 1.0, A, colsA, Omega, colsOmega, 0.0, Scratch, colsOmega);
-    cblas_dcopy(rowsA*colsOmega, Scratch, 1, C, 1);
+// computes C = A*Omega 
+void multiplyAChunk(double A[], double Omega[], double C[], int rowsA, int colsA, int colsOmega) {
+    cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, rowsA, colsOmega, colsA, 1.0, A, colsA, Omega, colsOmega, 0.0, C, colsOmega);
 }
 
 /* computes A'*(A*Omega) = A*S , so Scratch must have size rowsA*colsOmega */
@@ -323,3 +346,33 @@ void printvec(char * label, double * v) {
     printf(buffer);
 }
 
+// prints a matrix stored in row major format
+void printmat(char * label, double * mat, int height, int width) {
+    char buffer[2000];
+    int nextpos = 0;
+    nextpos = sprintf(buffer, label);
+    int rowidx, colidx;
+    for( rowidx = 0; rowidx < height; rowidx = rowidx + 1) {
+        for(colidx = 0; colidx < width; colidx = colidx + 1) {
+            nextpos = nextpos + sprintf(buffer + nextpos, "%f, ", mat[rowidx*width + colidx]);
+        }
+        sprintf(buffer + nextpos - 2, "\n");
+        nextpos = nextpos - 1;
+    }
+    printf(buffer); 
+}
+
+// copies matrix A
+void dgecopy(const double * A, long m, long n, long incRowA, long incColA, double * B, long incRowB, long incColB)
+{
+    int i, j;
+    for (j=0; j<n; ++j) {
+        for (i=0; i<m; ++i) {
+            B[i*incRowB+j*incColB] = A[i*incRowA+j*incColA];
+        }
+    }
+}
+
+void mattrans(const double * A, long m, long n, double * B) {
+    dgecopy(A, m, n, n, 1, B, 1, m); 
+}
