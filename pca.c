@@ -281,18 +281,18 @@ int main(int argc, char **argv) {
         printmat("best low-rank approximation of A\n", AV, numrows, numeigs);
     }
 
-    char labelbuf[80];
-    sprintf(labelbuf, "Process %d's copy of the right singular vectors:\n", mpi_rank);
-    printmat(labelbuf, rightSingVecs, numcols, numeigs);
+    //char labelbuf[80];
+    //sprintf(labelbuf, "Process %d's copy of the right singular vectors:\n", mpi_rank);
+    //printmat(labelbuf, rightSingVecs, numcols, numeigs);
 
     // SVD!
     if (mpi_rank == 0) {
-        double * U = (double *) malloc( numcols * numeigs * sizeof(double));
+        double * U = (double *) malloc( numrows * numeigs * sizeof(double));
         double * VT = (double *) malloc( numeigs * numeigs * sizeof(double));
         double * singvals = (double *) malloc( numeigs * sizeof(double));
-        LAPACKE_dgesdd(LAPACK_ROW_MAJOR, 'S', numcols, numeigs, AV, numeigs, singvals, U, numeigs, VT, numeigs);
+        LAPACKE_dgesdd(LAPACK_ROW_MAJOR, 'S', numrows, numeigs, AV, numeigs, singvals, U, numeigs, VT, numeigs);
 
-        printmat("left singular vectors of AV\n", U, numcols, numeigs);
+        printmat("left singular vectors of AV\n", U, numrows, numeigs);
         printmat("right singular vectors (transposed) of AV\n", VT, numeigs, numeigs);
         printvec("singular values of AV\n", singvals, numeigs);
 
