@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "cblas.h"
+#include "lapacke.h"
 
 extern void dsaupd_(int * ido, char * bmat, int * n, char * which,
                     int * nev, double * tol, double * resid, 
@@ -18,9 +19,14 @@ extern void dseupd_(int *rvec, char *HowMny, int *select,
                     int *ldv, int *iparam, int *ipntr,
                     double *workd, double *workl,
                     int *lworkl, int *info);
+
+lapack_int LAPACKE_dgesdd(int matrix_layout, char jobz, lapack_int m,
+    lapack_int n, double * a, lapack_int lda, double * s, double * u,
+    lapack_int ldu, double * vt, lapack_int ldvt);
+
 // future optimizations: use memory-aligned mallocs
 
-void printvec(char * label, double * v);
+void printvec(char * label, double * v, int numentries);
 void printmat(char * label, double * mat, int height, int width);
 void mattrans(const double * A, long m, long n, double * B);
 
@@ -148,7 +154,7 @@ int main(int argc, char **argv) {
         char rowlabel[50];
         for( rowIdx = 0; rowIdx < localrows; rowIdx = rowIdx + 1) {
             sprintf(rowlabel, "row %d, on process %d: ", rowIdx + startingrow, mpi_rank);
-            printvec(rowlabel, Alocal + rowIdx*numcols);
+            printvec(rowlabel, Alocal + rowIdx*numcols, numcols);
         }
 
         // distribute the initial vector
@@ -157,7 +163,7 @@ int main(int argc, char **argv) {
             for( idx = 0; idx < numcols; idx = idx + 1) {
                 vector[idx] = idx + 1;
             } 
-            printvec("test vector: ", vector);
+            printvec("test vector: ", vector, numcols);
         }
         MPI_Bcast(vector, numcols, MPI_DOUBLE, 0, comm);
 
@@ -166,7 +172,7 @@ int main(int argc, char **argv) {
 
        // display final product
        if (mpi_rank == 0) {
-           printvec(" A * test vector: ", vector);
+           printvec(" A * test vector: ", vector, numcols);
        }
     }
 
@@ -211,8 +217,8 @@ int main(int argc, char **argv) {
                 if (mpi_rank == 0) {
                     cblas_dcopy(numcols, vector, 1, workd + ipntr[1] - 1, 1); // y = A x
                     if (DEBUG_DISTMATVEC_FLAG) { 
-                        printvec("Input vector: ", workd + ipntr[0] - 1); 
-                        printvec("Output vector: ", workd + ipntr[1] - 1);
+                        printvec("Input vector: ", workd + ipntr[0] - 1, numcols); 
+                        printvec("Output vector: ", workd + ipntr[1] - 1, numcols);
                     }
                     dsaupd_(&ido, &bmat, &numcols, which,
                             &numeigs, &tol, resid,
@@ -254,7 +260,7 @@ int main(int argc, char **argv) {
         for( eigidx = 0; eigidx < numeigs; eigidx = eigidx + 1) {
             printf("Eigenvalue %d: %f\n", eigidx + 1, singVals[numeigs - eigidx - 1]);
      //       sprintf(labelbuf, "Eigenvector %d: ", eigidx + 1);
-     //       printvec(labelbuf, svtranspose + (numeigs - eigidx - 1)*numcols);
+     //       printvec(labelbuf, svtranspose + (numeigs - eigidx - 1)*numcols, numcols);
         }
 
     //    printmat("right singular vectors (in ascending order top to bottom)\n", svtranspose, numeigs, numcols);
@@ -278,6 +284,22 @@ int main(int argc, char **argv) {
     char labelbuf[80];
     sprintf(labelbuf, "Process %d's copy of the right singular vectors:\n", mpi_rank);
     printmat(labelbuf, rightSingVecs, numcols, numeigs);
+
+    // SVD!
+    if (mpi_rank == 0) {
+        double * U = (double *) malloc( numcols * numeigs * sizeof(double));
+        double * VT = (double *) malloc( numeigs * numeigs * sizeof(double));
+        double * singvals = (double *) malloc( numeigs * sizeof(double));
+        LAPACKE_dgesdd(LAPACK_ROW_MAJOR, 'S', numcols, numeigs, AV, numeigs, singvals, U, numeigs, VT, numeigs);
+
+        printmat("left singular vectors of AV\n", U, numcols, numeigs);
+        printmat("right singular vectors (transposed) of AV\n", VT, numeigs, numeigs);
+        printvec("singular values of AV\n", singvals, numeigs);
+
+        free(U);
+        free(VT);
+        free(singvals);
+    }
 
 
     free(Alocal);
@@ -317,9 +339,9 @@ void distributedGramianVecProd(double v[]) {
 void distributedMatMatProd(double mat[], double matProd[]) {
     multiplyAChunk(Alocal, mat, Scratch3, localrows, numcols, numeigs);
     if (mpi_rank != 0) {
-        MPI_Gatherv(Scratch3, localrows*numcols, MPI_DOUBLE, NULL, NULL, NULL, MPI_DOUBLE, 0, comm);
+        MPI_Gatherv(Scratch3, localrows*numeigs, MPI_DOUBLE, NULL, NULL, NULL, MPI_DOUBLE, 0, comm);
     } else {
-        MPI_Gatherv(Scratch3, localrows*numcols, MPI_DOUBLE, matProd, elementcounts, elementoffsets, MPI_DOUBLE, 0, comm);
+        MPI_Gatherv(Scratch3, localrows*numeigs, MPI_DOUBLE, matProd, elementcounts, elementoffsets, MPI_DOUBLE, 0, comm);
     }
 }
 
@@ -334,12 +356,12 @@ void multiplyGramianChunk(double A[], double Omega[], double C[], double Scratch
     cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, colsA, colsOmega, rowsA, 1.0, A, colsA, Scratch, colsOmega, 0.0, C, colsOmega);
 }
 
-void printvec(char * label, double * v) {
+void printvec(char * label, double * v, int length) {
     char buffer[20000];
     int nextpos = 0;
     nextpos = sprintf(buffer, label);
     int idx;
-    for(idx = 0; idx < numcols; idx = idx + 1) {
+    for(idx = 0; idx < length; idx = idx + 1) {
         nextpos = nextpos + sprintf(buffer + nextpos, "%f, ", v[idx]);
     }
     sprintf(buffer + nextpos - 2, "\n");
@@ -373,6 +395,7 @@ void dgecopy(const double * A, long m, long n, long incRowA, long incColA, doubl
     }
 }
 
+// stores the transpose of matrix A in matrix B
 void mattrans(const double * A, long m, long n, double * B) {
     dgecopy(A, m, n, n, 1, B, 1, m); 
 }
