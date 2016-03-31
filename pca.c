@@ -29,6 +29,7 @@ lapack_int LAPACKE_dgesdd(int matrix_layout, char jobz, lapack_int m,
 void printvec(char * label, double * v, int numentries);
 void printmat(char * label, double * mat, int height, int width);
 void mattrans(const double * A, long m, long n, double * B);
+void flipcolslr(double * A, long m, long n); 
 
 #define DEBUGATAFLAG 0
 #define DEBUG_DISTMATVEC_FLAG 1
@@ -59,7 +60,7 @@ int * elementcounts, * elementoffsets; // for an n-by-k matrix, contains the num
 
 int main(int argc, char **argv) {
 
-    char * infilename, * datasetname;
+    char * infilename, * datasetname, * outfname;
 
     /* HDF5 API definitions */
     hid_t plist_id, daccess_id, file_id, dataset_id, filespace, memspace; 
@@ -80,6 +81,7 @@ int main(int argc, char **argv) {
     numrows = atoi(argv[3]); // if you make this 6349440, the code will transparently ignore the remainder of the matrix
     numcols = atoi(argv[4]);
     numeigs = atoi(argv[5]);
+    outfname = argv[6];
 
     /* Allocate the correct portion of the input to each processor */
     int littlePartitionSize = numrows/mpi_size;
@@ -139,6 +141,13 @@ int main(int argc, char **argv) {
     status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, memspace, filespace, daccess_id, Alocal);
 
     //printf("Rank %d: loaded my data\n", mpi_rank);
+
+    H5Pclose(daccess_id);
+    H5Dclose(dataset_id);
+    H5Sclose(memspace);
+    H5Sclose(filespace);
+    H5Pclose(plist_id);
+    H5Fclose(file_id);
 
     double * vector = (double *) malloc( numcols * sizeof(double));
     Scratch = (double *) malloc( numcols * sizeof(double));
@@ -268,6 +277,8 @@ int main(int argc, char **argv) {
         mattrans(svtranspose, numeigs, numcols, rightSingVecs);
 
         printmat("right singular vectors (in ascending order left to right)\n", rightSingVecs, numcols, numeigs);
+        flipcolslr(rightSingVecs, numcols, numeigs);
+        printmat("right singular vectors (in descending order left to right)\n", rightSingVecs, numcols, numeigs);
 
         free(svtranspose); 
         free(select);
@@ -285,19 +296,62 @@ int main(int argc, char **argv) {
     //sprintf(labelbuf, "Process %d's copy of the right singular vectors:\n", mpi_rank);
     //printmat(labelbuf, rightSingVecs, numcols, numeigs);
 
-    // SVD!
+    // dgesdd returns its singular values in descending order
+    // note that the right singular vectors of AV should by definition be the identity 
     if (mpi_rank == 0) {
         double * U = (double *) malloc( numrows * numeigs * sizeof(double));
         double * VT = (double *) malloc( numeigs * numeigs * sizeof(double));
+        double * V = (double *) malloc( numeigs * numeigs * sizeof(double));
         double * singvals = (double *) malloc( numeigs * sizeof(double));
         LAPACKE_dgesdd(LAPACK_ROW_MAJOR, 'S', numrows, numeigs, AV, numeigs, singvals, U, numeigs, VT, numeigs);
+        mattrans(VT, numeigs, numeigs, V);
 
         printmat("left singular vectors of AV\n", U, numrows, numeigs);
         printmat("right singular vectors (transposed) of AV\n", VT, numeigs, numeigs);
+        printmat("right singular vectors of AV\n", V, numeigs, numeigs);
         printvec("singular values of AV\n", singvals, numeigs);
+
+        double * finalV = (double *) malloc( numcols * numeigs * sizeof(double));
+        cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, numcols, numeigs, numeigs, 1.0, rightSingVecs, numeigs, V, numeigs, 0.0, finalV, numeigs);
+        
+        printvec("top singular values of A\n", singvals, numeigs);
+        printmat("top left singular vectors of A\n", U, numrows, numeigs);
+        printmat("top right singular vectors of A\n", finalV, numcols, numeigs);
+
+        file_id = H5Fcreate(outfname, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+        hsize_t dims[2];
+        hid_t dataspace_id;
+        plist_id = H5Pcreate(H5P_DATASET_XFER);
+
+        dims[0] = numrows;
+        dims[1] = numeigs;
+        dataspace_id = H5Screate_simple(2, dims, NULL);
+        dataset_id = H5Dcreate2(file_id, "/U", H5T_NATIVE_DOUBLE, dataspace_id, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, dataspace_id, plist_id, U);
+        H5Dclose(dataset_id);
+        H5Sclose(dataspace_id);
+
+        dims[0] = numcols;
+        dims[1] = numeigs;
+        dataspace_id = H5Screate_simple(2, dims, NULL);
+        dataset_id = H5Dcreate2(file_id, "/V", H5T_NATIVE_DOUBLE, dataspace_id, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, dataspace_id, plist_id, finalV);
+        H5Dclose(dataset_id);
+        H5Sclose(dataspace_id);
+
+        dims[0] = numeigs;
+        dataspace_id = H5Screate_simple(1, dims, NULL);
+        dataset_id = H5Dcreate2(file_id, "/S", H5T_NATIVE_DOUBLE, dataspace_id, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        H5Dwrite(dataset_id, H5T_NATIVE_DOUBLE, H5S_ALL, dataspace_id, plist_id, singvals);
+        H5Dclose(dataset_id);
+        H5Sclose(dataspace_id);
+
+        H5Pclose(plist_id);
+        H5Fclose(file_id);
 
         free(U);
         free(VT);
+        free(finalV);
         free(singvals);
     }
 
@@ -316,14 +370,6 @@ int main(int argc, char **argv) {
         free(elementcounts);
         free(elementoffsets);
     }
-
-    H5Pclose(daccess_id);
-    H5Dclose(dataset_id);
-    H5Sclose(memspace);
-    H5Sclose(filespace);
-    H5Pclose(plist_id);
-    H5Fclose(file_id);
-
     MPI_Finalize();
     return 0;
 }
@@ -398,4 +444,12 @@ void dgecopy(const double * A, long m, long n, long incRowA, long incColA, doubl
 // stores the transpose of matrix A in matrix B
 void mattrans(const double * A, long m, long n, double * B) {
     dgecopy(A, m, n, n, 1, B, 1, m); 
+}
+
+// flips the left-right ordering of the columns of a matrix stored in rowmajor format
+void flipcolslr(double * A, long m, long n) {
+    int idx = 0;
+    for(idx = 0; idx < n/2; idx = idx + 1) {
+        cblas_dswap(m, A + idx, n, A + (n - 1 - idx), n);
+    }
 }
