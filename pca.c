@@ -32,7 +32,8 @@ void mattrans(const double * A, long m, long n, double * B);
 void flipcolslr(double * A, long m, long n); 
 
 #define DEBUGATAFLAG 0
-#define DEBUG_DISTMATVEC_FLAG 1
+#define DEBUG_DISTMATVEC_FLAG 0
+#define DISPLAY_FLAG 1
 
 // Computes C = A'*(A*Omega)
 // Scratch should have the size of (A*Omega)
@@ -113,7 +114,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    printf("Rank %d: assigned %d rows, %d--%d\n", mpi_rank, localrows, startingrow, startingrow + localrows - 1);
+    //printf("Rank %d: assigned %d rows, %d--%d\n", mpi_rank, localrows, startingrow, startingrow + localrows - 1);
 
     /* Load my portion of the data */
 
@@ -125,7 +126,8 @@ int main(int argc, char **argv) {
 
     count[0] = localrows;
     count[1] = numcols;
-    offset[0] = mpi_rank * count[0]; // TODO: change for non-uniform row partitioning
+    offset[0] = mpi_rank < numBigPartitions ? ( mpi_rank * bigPartitionSize ) : 
+                (numBigPartitions * bigPartitionSize + (mpi_rank - numBigPartitions) * littlePartitionSize );
     offset[1] = 0;
 
     filespace = H5Dget_space(dataset_id);
@@ -134,13 +136,24 @@ int main(int argc, char **argv) {
     memspace = H5Screate_simple(2, count, NULL);
     offset_out[0] = 0;
     offset_out[1] = 0;
-    Alocal = (double *) malloc( count[0]*count[1]*sizeof(double));
+    Alocal = (double *) malloc( localrows * numcols *sizeof(double));
     status = H5Sselect_hyperslab(memspace, H5S_SELECT_SET, offset_out, NULL, count, NULL);
     daccess_id = H5Pcreate(H5P_DATASET_XFER);
-    H5Pset_dxpl_mpio(daccess_id, H5FD_MPIO_COLLECTIVE);
-    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, memspace, filespace, daccess_id, Alocal);
+    if (Alocal == NULL) {
+        printf("Out of memory in process %d\n", mpi_rank);
+        exit(-1);
+    }
+    // collective io seems slow for this
+    //H5Pset_dxpl_mpio(daccess_id, H5FD_MPIO_COLLECTIVE);
 
-    //printf("Rank %d: loaded my data\n", mpi_rank);
+    MPI_Barrier(comm);
+    if (mpi_rank == 0) {
+        printf("Starting to load matrix\n");
+    }
+    status = H5Dread(dataset_id, H5T_NATIVE_DOUBLE, memspace, filespace, daccess_id, Alocal);
+    if (mpi_rank == 0) {
+        printf("Finished loading matrix\n");
+     }
 
     H5Pclose(daccess_id);
     H5Dclose(dataset_id);
@@ -150,11 +163,16 @@ int main(int argc, char **argv) {
     H5Fclose(file_id);
 
     double * vector = (double *) malloc( numcols * sizeof(double));
-    Scratch = (double *) malloc( numcols * sizeof(double));
+    Scratch = (double *) malloc( localrows * sizeof(double));
     Scratch2 = (double *) malloc( numcols * sizeof(double));
     Scratch3 = (double *) malloc( localrows * numeigs * sizeof(double));
     double * singVals = (double *) malloc( numeigs * sizeof(double));
     double * rightSingVecs = (double *) malloc( numeigs * numcols * sizeof(double));
+
+    if (vector == NULL || Scratch == NULL || Scratch2 == NULL || Scratch3 == NULL || singVals == NULL || rightSingVecs == NULL) {
+        printf("Out of memory on process %d\n", mpi_rank);
+        exit(-1);
+    }
 
     // Check that the distributed matrix-vector multiply against A^TA works
     if (DEBUGATAFLAG) { 
@@ -200,6 +218,11 @@ int main(int argc, char **argv) {
     double * workl = (double *) malloc(lworkl*sizeof(double));
     int arpack_info = 0;
 
+    if ( resid == NULL || v == NULL || workd == NULL || workl == NULL) {
+        printf("Out of memory on process %d\n", mpi_rank);
+        exit(-1);
+    }
+
     char bmat = 'I';
     char which[3] = "LM";
 
@@ -210,7 +233,7 @@ int main(int argc, char **argv) {
                 &ncv, v, &numcols,
                 iparam, ipntr, workd,
                 workl, &lworkl, &arpack_info);
-        //printf("Info : %d\n", arpack_info);
+        printf("Info : %d\n", arpack_info);
         cblas_dcopy(numcols, workd + ipntr[0] - 1, 1, vector, 1); 
     }
     MPI_Bcast(&ido, 1, MPI_INTEGER, 0, comm);
@@ -224,6 +247,7 @@ int main(int argc, char **argv) {
             if (ido == 1 || ido == -1) {
                 distributedGramianVecProd(vector);
                 if (mpi_rank == 0) {
+                    printf("Peeps wuz up?\n");
                     cblas_dcopy(numcols, vector, 1, workd + ipntr[1] - 1, 1); // y = A x
                     if (DEBUG_DISTMATVEC_FLAG) { 
                         printvec("Input vector: ", workd + ipntr[0] - 1, numcols); 
@@ -252,6 +276,8 @@ int main(int argc, char **argv) {
         int * select = (int * ) malloc(numeigs * sizeof(int));
         double sigma = 0;
     
+        // eigenvalues and eigenvectors are returned in ascending order
+        // eigenvectors are returned in column major form
         double * svtranspose = (double *) malloc( numeigs * numcols * sizeof(double));
         dseupd_(&rvec, &HowMny, select,
                 singVals, svtranspose, &numcols,
@@ -262,22 +288,9 @@ int main(int argc, char **argv) {
                 workd, workl, 
                 &lworkl, &arpack_info);
 
-        // eigenvalues and eigenvectors are returned in ascending order
-        // eigenvectors are returned in column major form
-        int eigidx;
-        char labelbuf[50];
-        for( eigidx = 0; eigidx < numeigs; eigidx = eigidx + 1) {
-            printf("Eigenvalue %d: %f\n", eigidx + 1, singVals[numeigs - eigidx - 1]);
-     //       sprintf(labelbuf, "Eigenvector %d: ", eigidx + 1);
-     //       printvec(labelbuf, svtranspose + (numeigs - eigidx - 1)*numcols, numcols);
-        }
-
-    //    printmat("right singular vectors (in ascending order top to bottom)\n", svtranspose, numeigs, numcols);
-
         mattrans(svtranspose, numeigs, numcols, rightSingVecs);
-
-        printmat("right singular vectors (in ascending order left to right)\n", rightSingVecs, numcols, numeigs);
         flipcolslr(rightSingVecs, numcols, numeigs);
+
         printmat("right singular vectors (in descending order left to right)\n", rightSingVecs, numcols, numeigs);
 
         free(svtranspose); 
@@ -292,26 +305,16 @@ int main(int argc, char **argv) {
         printmat("best low-rank approximation of A\n", AV, numrows, numeigs);
     }
 
-    //char labelbuf[80];
-    //sprintf(labelbuf, "Process %d's copy of the right singular vectors:\n", mpi_rank);
-    //printmat(labelbuf, rightSingVecs, numcols, numeigs);
-
     // dgesdd returns its singular values in descending order
     // note that the right singular vectors of AV should by definition be the identity 
     if (mpi_rank == 0) {
         double * U = (double *) malloc( numrows * numeigs * sizeof(double));
         double * VT = (double *) malloc( numeigs * numeigs * sizeof(double));
         double * V = (double *) malloc( numeigs * numeigs * sizeof(double));
+        double * finalV = (double *) malloc( numcols * numeigs * sizeof(double));
         double * singvals = (double *) malloc( numeigs * sizeof(double));
         LAPACKE_dgesdd(LAPACK_ROW_MAJOR, 'S', numrows, numeigs, AV, numeigs, singvals, U, numeigs, VT, numeigs);
         mattrans(VT, numeigs, numeigs, V);
-
-        printmat("left singular vectors of AV\n", U, numrows, numeigs);
-        printmat("right singular vectors (transposed) of AV\n", VT, numeigs, numeigs);
-        printmat("right singular vectors of AV\n", V, numeigs, numeigs);
-        printvec("singular values of AV\n", singvals, numeigs);
-
-        double * finalV = (double *) malloc( numcols * numeigs * sizeof(double));
         cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, numcols, numeigs, numeigs, 1.0, rightSingVecs, numeigs, V, numeigs, 0.0, finalV, numeigs);
         
         printvec("top singular values of A\n", singvals, numeigs);
@@ -378,6 +381,7 @@ int main(int argc, char **argv) {
 void distributedGramianVecProd(double v[]) {
     multiplyGramianChunk(Alocal, v, v, Scratch, localrows, numcols, 1); // TODO: write an appropriate mat-vec function instead of using the mat-mat function
     MPI_Allreduce(v, Scratch2, numcols, MPI_DOUBLE, MPI_SUM, comm);
+    printf("Here\n");
     cblas_dcopy(numcols, Scratch2, 1, v, 1);
 }
 
@@ -398,16 +402,35 @@ void multiplyAChunk(double A[], double Omega[], double C[], int rowsA, int colsA
 
 /* computes A'*(A*Omega) = A*S , so Scratch must have size rowsA*colsOmega */
 void multiplyGramianChunk(double A[], double Omega[], double C[], double Scratch[], int rowsA, int colsA, int colsOmega) {
+    //printf("A should have size %d by %d\n", rowsA, colsA);
+    //printf("Omega should have size %d by %d\n", colsA, colsOmega);
+    //printf("Scratch = A*Omega should have size %d by %d\n", rowsA, colsOmega);
     cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, rowsA, colsOmega, colsA, 1.0, A, colsA, Omega, colsOmega, 0.0, Scratch, colsOmega);
+    //printf("after dgemm 1");
     cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, colsA, colsOmega, rowsA, 1.0, A, colsA, Scratch, colsOmega, 0.0, C, colsOmega);
+    //printf("after dgemm 2");
+    /*
+    double * C2 = (double *) malloc( sizeof(double) * colsA * colsOmega );
+    double * A2 = (double *) malloc( sizeof(double) * rowsA * colsA );
+    double * ScratchMe = (double *) malloc( sizeof(double) * rowsA * colsOmega);
+    if (C2 == NULL || A2 == NULL || ScratchMe == NULL) {
+        printf("Out of memory on process %d\n", mpi_rank);
+        exit(-1);
+    }
+    cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans, colsA, colsOmega, rowsA, 1.0, A2, colsA, ScratchMe, colsOmega, 0.0, C, colsOmega);
+    */
 }
 
 void printvec(char * label, double * v, int length) {
-    char buffer[20000];
+    if (!DISPLAY_FLAG) {
+        return;
+    }
+    char buffer[2000];
     int nextpos = 0;
     nextpos = sprintf(buffer, label);
     int idx;
-    for(idx = 0; idx < length; idx = idx + 1) {
+    int practical_length = length < 20 ? length : 20;
+    for(idx = 0; idx < practical_length; idx = idx + 1) {
         nextpos = nextpos + sprintf(buffer + nextpos, "%f, ", v[idx]);
     }
     sprintf(buffer + nextpos - 2, "\n");
@@ -416,6 +439,9 @@ void printvec(char * label, double * v, int length) {
 
 // prints a matrix stored in row major format
 void printmat(char * label, double * mat, int height, int width) {
+    if (!DISPLAY_FLAG) {
+        return;
+    }
     char buffer[2000];
     int nextpos = 0;
     nextpos = sprintf(buffer, label);
