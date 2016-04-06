@@ -5,10 +5,7 @@ FNAMEIN="/global/cscratch1/sd/jialin/climate/oceanTemps.hdf5"
 all: cori
 
 cori: pca.c
-	module load hdf5-parallel; \
-	echo "$$HDF5_INCLUDE_OPTS"; \
-	echo "$$HDF5_POST_LINK_OPTS"; \
-	cc -o pca pca.c "$$HDF5_INCLUDE_OPTS" -static -lhdf5 -larpack -L. "$$HDF5_POST_LINK_OPTS"
+	cc -g -o pca pca.c -larpack -L.
 
 edison: pca.c
 	module load cray-hdf5-parallel; \

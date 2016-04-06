@@ -5,6 +5,8 @@
 #include "cblas.h"
 #include "lapacke.h"
 
+#define MAX_ITERS 70
+
 extern void dsaupd_(int * ido, char * bmat, int * n, char * which,
                     int * nev, double * tol, double * resid, 
                     int * ncv, double * v, int * ldv,
@@ -33,7 +35,7 @@ void flipcolslr(double * A, long m, long n);
 
 #define DEBUGATAFLAG 0
 #define DEBUG_DISTMATVEC_FLAG 0
-#define DISPLAY_FLAG 1
+#define DISPLAY_FLAG 0
 
 // Computes C = A'*(A*Omega)
 // Scratch should have the size of (A*Omega)
@@ -62,7 +64,7 @@ int * elementcounts, * elementoffsets; // for an n-by-k matrix, contains the num
 int main(int argc, char **argv) {
 
     char * infilename, * datasetname, * outfname;
-
+	double elapstr, elapstp;
     /* HDF5 API definitions */
     hid_t plist_id, daccess_id, file_id, dataset_id, filespace, memspace; 
     herr_t status; 
@@ -76,16 +78,20 @@ int main(int argc, char **argv) {
     MPI_Init(&argc, &argv);
     MPI_Comm_size(comm, &mpi_size);
     MPI_Comm_rank(comm, &mpi_rank);
-
+	elapstr = MPI_Wtime();
+	printf("Processor %d Finished MPI_Init().\n",mpi_rank);
     infilename = argv[1];
     datasetname = argv[2];
     numrows = atoi(argv[3]); // if you make this 6349440, the code will transparently ignore the remainder of the matrix
     numcols = atoi(argv[4]);
     numeigs = atoi(argv[5]);
     outfname = argv[6];
+	
 
     /* Allocate the correct portion of the input to each processor */
-    int littlePartitionSize = numrows/mpi_size;
+    double rdmtxstr = MPI_Wtime();
+	
+	int littlePartitionSize = numrows/mpi_size;
     int bigPartitionSize = littlePartitionSize + 1;
     int numLittlePartitions = mpi_size - numrows % mpi_size;
     int numBigPartitions = numrows % mpi_size;
@@ -122,7 +128,7 @@ int main(int argc, char **argv) {
     H5Pset_fapl_mpio(plist_id, comm, info);
 
     file_id = H5Fopen(infilename, H5F_ACC_RDONLY, plist_id);
-    dataset_id = H5Dopen2(file_id, datasetname, H5P_DEFAULT);
+    dataset_id = H5Dopen(file_id, datasetname, H5P_DEFAULT);
 
     count[0] = localrows;
     count[1] = numcols;
@@ -144,9 +150,9 @@ int main(int argc, char **argv) {
         exit(-1);
     }
     // collective io seems slow for this
-    //H5Pset_dxpl_mpio(daccess_id, H5FD_MPIO_COLLECTIVE);
+    H5Pset_dxpl_mpio(daccess_id, H5FD_MPIO_INDEPENDENT);
 
-    MPI_Barrier(comm);
+    //MPI_Barrier(comm);
     if (mpi_rank == 0) {
         printf("Starting to load matrix\n");
     }
@@ -162,6 +168,12 @@ int main(int argc, char **argv) {
     H5Pclose(plist_id);
     H5Fclose(file_id);
 
+	double rdmtxstp = MPI_Wtime();
+	if(mpi_rank == 0)
+		printf("Time to readHDF5 matrix: %f\n", rdmtxstp - rdmtxstr); 
+
+
+	
     double * vector = (double *) malloc( numcols * sizeof(double));
     Scratch = (double *) malloc( localrows * sizeof(double));
     Scratch2 = (double *) malloc( numcols * sizeof(double));
@@ -235,20 +247,28 @@ int main(int argc, char **argv) {
                 workl, &lworkl, &arpack_info);
         printf("Info : %d\n", arpack_info);
         cblas_dcopy(numcols, workd + ipntr[0] - 1, 1, vector, 1); 
+        //printf("ipntr[0] - 1 = %d, should be less than %d\n", ipntr[0] - 1, 3*numcols); 
     }
     MPI_Bcast(&ido, 1, MPI_INTEGER, 0, comm);
     MPI_Bcast(vector, numcols, MPI_DOUBLE, 0, comm);
 
     // keep calling ARPACK until done
-    while(ido != 99) {
+    int niters = 0;
+	double tgrammv = 0., grammvstr, grammvstp;
+	double tarpk = 0., arpkstr, arpkstp;
+	while(niters < MAX_ITERS) {
             if (mpi_rank == 0) {
                 printf("Return code %d\n", ido);
             }
             if (ido == 1 || ido == -1) {
+				grammvstr = MPI_Wtime();
                 distributedGramianVecProd(vector);
+				grammvstp = MPI_Wtime();
+				tgrammv += grammvstp - grammvstr;
+				arpkstr = MPI_Wtime();
                 if (mpi_rank == 0) {
-                    printf("Peeps wuz up?\n");
-                    cblas_dcopy(numcols, vector, 1, workd + ipntr[1] - 1, 1); // y = A x
+                    //printf("ipntr[1] - 1 = %d, should be less than %d\n", ipntr[1] - 1, 3*numcols); 
+					cblas_dcopy(numcols, vector, 1, workd + ipntr[1] - 1, 1); // y = A x
                     if (DEBUG_DISTMATVEC_FLAG) { 
                         printvec("Input vector: ", workd + ipntr[0] - 1, numcols); 
                         printvec("Output vector: ", workd + ipntr[1] - 1, numcols);
@@ -263,23 +283,38 @@ int main(int argc, char **argv) {
                 MPI_Bcast(vector, numcols, MPI_DOUBLE, 0, comm); 
             }
             MPI_Bcast(&ido, 1, MPI_INTEGER, 0, comm);
-    }
+			arpkstp = MPI_Wtime();
+			tarpk += arpkstp - arpkstr;
+    	niters++;
+	}
+
+	if(mpi_rank == 0){
+		printf("Time to perfom distributed Gram matrix-vectors: %f\n", tgrammv); 
+		printf("Time spend in arpack: %f\n", tarpk); 
+	}
+	
 
     if (mpi_rank == 0) {
         int num_iters = iparam[8];
         int num_evals = iparam[4];
-        printf("Used %d matrix-vector products to converge to %d eigenvalue\n", num_iters, num_evals);
-        printf("Return value: %d\n", arpack_info);
+        double trtzstr = MPI_Wtime();
+		printf("Used %d matrix-vector products to converge to %d eigenvalue\n", num_iters, num_evals);
+        //printf("Return value: %d\n", arpack_info);
 
         int rvec = 1; // compute Ritz vectors
         char HowMny = 'A';
-        int * select = (int * ) malloc(numeigs * sizeof(int));
+		//printf("Changed select dim from numeigs to ncv\n");
+        int * select = (int * ) malloc(ncv * sizeof(int));
         double sigma = 0;
-    
+    	
         // eigenvalues and eigenvectors are returned in ascending order
         // eigenvectors are returned in column major form
         double * svtranspose = (double *) malloc( numeigs * numcols * sizeof(double));
-        dseupd_(&rvec, &HowMny, select,
+        //printf("Calling dseupd_ from rank 0\n");
+		if(svtranspose == NULL || select == NULL)
+        	printf("Uh Oh, svtranspose is NULL\n");
+			
+		dseupd_(&rvec, &HowMny, select,
                 singVals, svtranspose, &numcols,
                 &sigma, &bmat, &numcols,
                 which, &numeigs, &tol, 
@@ -288,27 +323,36 @@ int main(int argc, char **argv) {
                 workd, workl, 
                 &lworkl, &arpack_info);
 
+        //printf("Calling mattrans from rank 0\n");
         mattrans(svtranspose, numeigs, numcols, rightSingVecs);
+        //printf("Calling flipcolslr from rank 0\n");
         flipcolslr(rightSingVecs, numcols, numeigs);
 
-        printmat("right singular vectors (in descending order left to right)\n", rightSingVecs, numcols, numeigs);
-
+        //printmat("right singular vectors (in descending order left to right)\n", rightSingVecs, numcols, numeigs);
+		double trtzstp = MPI_Wtime();
+		printf("Time to compute Ritz vectors: %f\n", trtzstp - trtzstr);
         free(svtranspose); 
         free(select);
     }
-    MPI_Bcast(rightSingVecs, numeigs*numcols, MPI_DOUBLE, 0, comm);
-
+	//printf("Performing a broadcast\n");
+    double tcompavstr, tcompavstp;
+	tcompavstr = MPI_Wtime();
+	MPI_Bcast(rightSingVecs, numeigs*numcols, MPI_DOUBLE, 0, comm);
     double * AV = (double *) malloc( numrows * numeigs * sizeof(double));
     distributedMatMatProd(rightSingVecs, AV);
-
+	tcompavstp = MPI_Wtime();
     if (mpi_rank == 0) {
+		printf("Time to compute AV: %f\n", tcompavstp - tcompavstr);
         printmat("best low-rank approximation of A\n", AV, numrows, numeigs);
     }
+
 
     // dgesdd returns its singular values in descending order
     // note that the right singular vectors of AV should by definition be the identity 
     if (mpi_rank == 0) {
-        double * U = (double *) malloc( numrows * numeigs * sizeof(double));
+        double tsddstr, tsddstp;
+		tsddstr = MPI_Wtime();
+		double * U = (double *) malloc( numrows * numeigs * sizeof(double));
         double * VT = (double *) malloc( numeigs * numeigs * sizeof(double));
         double * V = (double *) malloc( numeigs * numeigs * sizeof(double));
         double * finalV = (double *) malloc( numcols * numeigs * sizeof(double));
@@ -316,11 +360,15 @@ int main(int argc, char **argv) {
         LAPACKE_dgesdd(LAPACK_ROW_MAJOR, 'S', numrows, numeigs, AV, numeigs, singvals, U, numeigs, VT, numeigs);
         mattrans(VT, numeigs, numeigs, V);
         cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, numcols, numeigs, numeigs, 1.0, rightSingVecs, numeigs, V, numeigs, 0.0, finalV, numeigs);
-        
+        tsddstp = MPI_Wtime();
+		printf("Time to compute SVD of AV: %f\n", tsddstp - tsddstr);
         printvec("top singular values of A\n", singvals, numeigs);
         printmat("top left singular vectors of A\n", U, numrows, numeigs);
         printmat("top right singular vectors of A\n", finalV, numcols, numeigs);
 
+		//For timing, comment out writing output files.
+		/*
+		 *
         file_id = H5Fcreate(outfname, H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
         hsize_t dims[2];
         hid_t dataspace_id;
@@ -351,29 +399,29 @@ int main(int argc, char **argv) {
 
         H5Pclose(plist_id);
         H5Fclose(file_id);
-
+		*
+		*/
         free(U);
         free(VT);
         free(finalV);
         free(singvals);
     }
-
-
     free(Alocal);
     free(Scratch);
     free(Scratch2);
-
     free(vector);
     free(resid);
     free(v);
     free(workd);
     free(workl);
-
-    if (mpi_rank == 0) {
-        free(elementcounts);
-        free(elementoffsets);
+    if(mpi_rank == 0){
+		free(elementcounts);
+    	free(elementoffsets);
     }
-    MPI_Finalize();
+	elapstp = MPI_Wtime();
+	if(mpi_rank == 0)
+		printf("Total PCA elapsed time: %f\n", elapstp - elapstr);
+	MPI_Finalize();
     return 0;
 }
 
@@ -381,7 +429,6 @@ int main(int argc, char **argv) {
 void distributedGramianVecProd(double v[]) {
     multiplyGramianChunk(Alocal, v, v, Scratch, localrows, numcols, 1); // TODO: write an appropriate mat-vec function instead of using the mat-mat function
     MPI_Allreduce(v, Scratch2, numcols, MPI_DOUBLE, MPI_SUM, comm);
-    printf("Here\n");
     cblas_dcopy(numcols, Scratch2, 1, v, 1);
 }
 
@@ -477,5 +524,6 @@ void flipcolslr(double * A, long m, long n) {
     int idx = 0;
     for(idx = 0; idx < n/2; idx = idx + 1) {
         cblas_dswap(m, A + idx, n, A + (n - 1 - idx), n);
+		//printf("Performed flipcolslr idx: %d/%d. m: %d. n: %d\n", idx, n/2, m , n);
     }
 }
