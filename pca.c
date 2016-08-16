@@ -5,6 +5,8 @@
 #include "cblas.h"
 #include "lapacke.h"
 
+// TODO : add mean centering!
+
 extern void dsaupd_(int * ido, char * bmat, int * n, char * which,
                     int * nev, double * tol, double * resid, 
                     int * ncv, double * v, int * ldv,
