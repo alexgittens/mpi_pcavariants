@@ -1,9 +1,12 @@
 version := "0.0.1"
-scalaVersion := "2.10.5"
+scalaVersion := "2.11.8"
 libraryDependencies ++= Seq(
-    "org.scalanlp" %% "breeze" % "0.12",
+    "org.scalanlp" %% "breeze" % "0.12", 
     "org.scalanlp" %% "breeze-natives" % "0.12"
 )
+
+excludeDependencies += "org.slf4j" % "slf4j-api"
+//javacOptions += "-target:jvm-1.8"
 
 resolvers += "Sonatype Releases" at "https://oss.sonatype.org/content/repositories/releases/"
 
