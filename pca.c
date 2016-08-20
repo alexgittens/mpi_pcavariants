@@ -8,6 +8,7 @@
 
 // NB: CBLAS has nonconstant overhead, because after operations, it stores the output in row major
 // TODO : read the dimensions from the input dataset
+// TODO : use BLAS level 2 to compute the matrix-vector products!
 
 extern void dsaupd_(int * ido, char * bmat, int * n, char * which,
                     int * nev, double * tol, double * resid, 
@@ -54,7 +55,7 @@ void multiplyAChunk(double A[], double Omega[], double C[], int rowsA, int colsA
 void distributedMatMatProd(double mat[], double matProd[]);
 
 // computes means of the rows of A, subtracts them from A, and returns them  in meanVec
-void computeRowMeans(double meanVec[]);
+void computeAndSubtractRowMeans(double meanVec[]);
 
 // rescales the rows of A by the given weights
 void rescaleRows(double weights[]);
@@ -229,7 +230,7 @@ int main(int argc, char **argv) {
         rowWeights = malloc(numrows * sizeof(double));
         loadRowWeights(weightsFname, rowWeights);
     }
-    computeRowMeans(meanVec);
+    computeAndSubtractRowMeans(meanVec);
     rescaleRows(rowWeights);
     double pdmtxstp = MPI_Wtime();
     if (mpi_rank == 0) {
@@ -491,9 +492,13 @@ int main(int argc, char **argv) {
 
 // computes means of the rows of A, subtracts them from A, and returns them in meanVec on the root process
 // assumes memory has already been allocated
-void computeRowMeans(double meanVec[]) {
+void computeAndSubtractRowMeans(double meanVec[]) {
     double * onesVec = (double *) malloc( numcols * sizeof(double));
     double * localMeanVec = (double *) malloc( localrows * sizeof(double));
+    int idx;
+    for(idx = 0; idx < numcols; idx = idx + 1) {
+        onesVec[idx]=1;
+    }
     cblas_dgemv(CblasRowMajor, CblasNoTrans, localrows, numcols, 1.0/((double)numcols), Alocal, numcols, onesVec, 1, 0, localMeanVec, 1);
     cblas_dger(CblasRowMajor, localrows, numcols, -1.0, localMeanVec, 1, onesVec, 1, Alocal, numcols);
     if (mpi_rank != 0) {
@@ -636,8 +641,7 @@ void loadRowWeights(char * weightsFname, double * rowWeights) {
         exit(1);
     }
     while(fscanf(fin, "%d,%lf", &rowIdx, &latVal) != EOF) {
-        rowWeights[rowIdx] = sqrt(cos(latVal));
-        //printf("Read %d: %lf\n", rowIdx, latVal);
+        rowWeights[rowIdx] = sqrt(cos(latVal*M_PI/180.0));
     }
     fclose(fin);
 }
