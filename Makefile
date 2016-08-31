@@ -13,6 +13,7 @@ MEDIUMOUTFNAME=mediumeofs.h5
 MEDIUMEOF3DFNAME=mediumoefs.nc
 
 # use 40 slurm nodes : takes less than 12 minutes
+# NB: the determining factor in the number of nodes is that Parallel-HDF5 can only load less than 2GB in each call to h5fread
 LARGEFNAMEIN=/global/cscratch1/sd/gittens/conversion-code/ocean_conversion/output/ocean.h5
 LARGEVARNAME=rows
 LARGELATFNAME=/global/cscratch1/sd/gittens/conversion-code/ocean_conversion/output/observedLatitudes.csv

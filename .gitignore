@@ -4,3 +4,5 @@ out.hdf5
 3d.nc
 project/
 target/
+largeeofs*
+pca

@@ -9,6 +9,8 @@
 // NB: CBLAS has nonconstant overhead, because after operations, it stores the output in row major
 // TODO : read the dimensions from the input dataset
 // TODO : use BLAS level 2 to compute the matrix-vector products!
+// TODO : allow each process to load more than 2GB at a time by doing reading in chunks (will make more scalable: really, the whole point of doing 
+// distributed matrix-vector products is to allow the matrix to be fit in memory, so we should make ourselves memory-limited)
 
 extern void dsaupd_(int * ido, char * bmat, int * n, char * which,
                     int * nev, double * tol, double * resid, 
