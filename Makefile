@@ -49,3 +49,6 @@ edison: pca.c
 	module load cray-hdf5-parallel && \
 	cc -o pca pca.c -I$$HDF5_INCLUDE_OPTS -static -lhdf5 -larpack -L. -L$$CRAY_LD_LIBRARY_PATH
 
+modular: computations.c io.c pca.h modularpca.c 
+	module load cray-hdf5-parallel && \
+	cc -std=c99 -g -o modularpca modularpca.c computations.c io.c -larpack -I. -L.
