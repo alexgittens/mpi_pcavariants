@@ -24,6 +24,17 @@ LARGERANK=100
 LARGEOUTFNAME=largeeofs.h5
 LARGEEOF3DFNAME=largeeofs.nc
 
+# use 30 slurm nodes
+# NB: this has to hold both temp and rho in memory
+CESMFNAMEIN=/global/cscratch1/sd/gittens/conversion-code/CESM_conversion/output/cesm.h5
+CESMTEMPDATASETNAME=temp
+CESMRHODATASETNAME=rho
+CESMLATFNAME=/global/cscratch1/sd/gittens/conversion-code/CESM_conversion/output/observedLatitudes.csv
+CESMMETADATADIR=/global/cscratch1/sd/gittens/conversion-code/CESM_conversion/output/
+CESMRANK=100
+CESMOUTFNAME=cesmeofs.h5
+CESMEOF3DFNAME=cesmeofs.nc
+
 all: cori
 
 cori: pca.c
@@ -39,10 +50,10 @@ mediumscale: cori
 	srun -u -c 1 -n 187 ./pca ${MEDIUMFNAMEIN} ${MEDIUMVARNAME} ${MEDIUMLATFNAME} ${MEDIUMNUMROWS} ${MEDIUMNUMCOLS} ${MEDIUMRANK} ${MEDIUMOUTFNAME} && \
 	python reshape.py ${MEDIUMOUTFNAME} "latweighting+centering" ${MEDIUMMETADATADIR} ${MEDIUMEOF3DFNAME}
 
-largescale: cori
+cfsro: cori
 	module load cray-hdf5-parallel && \
 	srun -u -c 1 -n 1252 ./pca ${LARGEFNAMEIN} ${LARGEVARNAME} ${LARGELATFNAME} ${LARGENUMROWS} ${LARGENUMCOLS} ${LARGERANK} ${LARGEOUTFNAME} && \
-	python reshape.py ${LARGEOUTFNAME} "latweighting+centering" ${LARGEMETADATADIR} ${LARGEEOF3DFNAME}
+	python cfsroreshape.py ${LARGEOUTFNAME} "latweighting+centering" ${LARGEMETADATADIR} ${LARGEEOF3DFNAME}
 
 # deprecated, but keep around in case need to compile on Edison at some point
 edison: pca.c
@@ -52,3 +63,8 @@ edison: pca.c
 modular: computations.c io.c pca.h modularpca.c 
 	module load cray-hdf5-parallel && \
 	cc -std=c99 -g -o modularpca modularpca.c computations.c io.c -larpack -I. -L.
+
+cesm: modular
+	module load cray-hdf5-parallel && \
+	srun -u -c 1 -n 960 ./modularpca ${CESMFNAMEIN} ${CESMFNAMEIN} ${CESMTEMPDATASETNAME} ${CESMRHODATASETNAME} ${CESMLATFNAME} ${CESMRANK} ${CESMOUTFNAME} && \
+	python cesmreshape.py ${CESMOUTFNAME} "latweighting+centering" ${CESMMETADATADIR} ${CESMEOF3DFNAME}

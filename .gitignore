@@ -7,3 +7,5 @@ target/
 largeeofs*
 pca
 modularpca
+cesmeofs.h5
+cesmeofs.nc
