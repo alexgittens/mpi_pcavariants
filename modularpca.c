@@ -74,12 +74,14 @@ int main(int argc, char **argv) {
     int numrows = matInfo->numrows;
 
 
-    /* Compute row means and center the rows of the temperature data */
+    /* Compute row means and center the rows of the temperature data:
+     * first mutiply the temperature by density, then compute and subtract mean temperatures, then rescale by latitude weights
+     */
     double *meanVec = malloc(numrows * sizeof(double));
     double preprocessingTime = MPI_Wtime();
+    dhad(localRowChunk, localRhoRowChunk, matInfo->localrows * numcols); //hadamard product: for CESM, multiply temperature by density
     computeAndSubtractRowMeans(localRowChunk, meanVec, matInfo);
     rescaleRows(localRowChunk, rowWeights, matInfo);
-    dhad(localRowChunk, localRhoRowChunk, matInfo->localrows * numcols); //hadamard product: for CESM, multiply temperature by density
 
     preprocessingTime = MPI_Wtime() - preprocessingTime;
     if (mpi_rank == 0) {
