@@ -55,7 +55,10 @@ int main(int argc, char **argv) {
     double *localRowChunk, *localRhoRowChunk;
     double readDimsTime = getMatrixInfo(temp_infilename, temp_datasetname, &comm, &info, matInfo);
     double readTempTime = loadMatrix(temp_infilename, temp_datasetname, matInfo, &localRowChunk, &comm, &info);
-    double readRhoTime = loadMatrix(rho_infilename, rho_datasetname, matInfo, &localRhoRowChunk, &comm, &info);
+    double readRhoTime = 0;
+    if (strcmp(rho_datasetname, "NULL")) {
+        readRhoTime = loadMatrix(rho_infilename, rho_datasetname, matInfo, &localRhoRowChunk, &comm, &info);
+    }
 
     /* Load the row weights (sqrt of cos of the latitudes corresponding to each row) from file */
     double *rowWeights = (double *) malloc( sizeof(double)*matInfo->numrows );
@@ -73,13 +76,14 @@ int main(int argc, char **argv) {
     int numcols = matInfo->numcols;
     int numrows = matInfo->numrows;
 
-
     /* Compute row means and center the rows of the temperature data:
      * first mutiply the temperature by density, then compute and subtract mean temperatures, then rescale by latitude weights
      */
     double *meanVec = malloc(numrows * sizeof(double));
     double preprocessingTime = MPI_Wtime();
-    dhad(localRowChunk, localRhoRowChunk, matInfo->localrows * numcols); //hadamard product: for CESM, multiply temperature by density
+    if (strcmp(rho_datasetname, "NULL")) {
+        dhad(localRowChunk, localRhoRowChunk, matInfo->localrows * numcols); //hadamard product: for CESM, multiply temperature by density
+    }
     computeAndSubtractRowMeans(localRowChunk, meanVec, matInfo);
     rescaleRows(localRowChunk, rowWeights, matInfo);
 
@@ -261,7 +265,9 @@ int main(int argc, char **argv) {
     }
 
     free(localRowChunk);
-    free(localRhoRowChunk);
+    if (strcmp(rho_datasetname, "NULL")) {
+        free(localRhoRowChunk);
+    }
     free(rowWeights);
     free(vector);
     free(resid);
