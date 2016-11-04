@@ -1,6 +1,8 @@
 #SHELL="/bin/bash"
 .SHELLARGS="-l -c"
 
+# All parameters chosen for Cori
+
 # use 7 slurm nodes
 MEDIUMFNAMEIN=/global/cscratch1/sd/gittens/conversion-code/ocean_conversion/testOutputs/ocean.h5
 MEDIUMVARNAME=rows
@@ -35,6 +37,14 @@ CESMRANK=100
 CESMOUTFNAME=cesmeofs.h5
 CESMEOF3DFNAME=cesmeofs.nc
 
+# use 30 CORI nodes
+THERMOCLINEFNAMEIN=/global/cscratch1/sd/gittens/conversion-code/CFSRO_conversion/thermoclineOutput/thermoclineOcean.h5
+THERMOCLINEDATASETNAME=rows
+THERMOCLINELATFNAME=/global/cscratch1/sd/gittens/conversion-code/CFSRO_conversion/thermoclineOutput/observedLatitudes.csv
+THERMOCLINEMETADATADIR=/global/cscratch1/sd/gittens/conversion-code/CFSRO_conversion/thermoclineOutput/
+THERMOCLINERANK=100
+THERMOCLINEOUTFNAME=thermoclineeofs.h5
+THERMOCLINEEOF3DFNAME=thermoclineeofs.nc
 all: cori
 
 cori: pca.c
@@ -68,3 +78,8 @@ cesm: modular
 	module load python cray-hdf5-parallel && \
 	srun -u -c 1 -n 960 ./modularpca ${CESMFNAMEIN} ${CESMFNAMEIN} ${CESMTEMPDATASETNAME} ${CESMRHODATASETNAME} ${CESMLATFNAME} ${CESMRANK} ${CESMOUTFNAME} && \
 	python cesmreshape.py ${CESMOUTFNAME} "latweighting+centering" ${CESMMETADATADIR} ${CESMEOF3DFNAME}
+
+thermocline: modular
+	module load python cray-hdf5-parallel && \
+	srun -u -c 1 -n 960 ./modularpca  ${THERMOCLINEFNAMEIN} NULL ${THERMOCLINEDATASETNAME} NULL ${THERMOCLINELATFNAME} ${THERMOCLINERANK} ${THERMOCLINEOUTFNAME} && \
+	python thermoclinereshape.py ${THERMOCLINEOUTFNAME} "latweighting+centering" ${THERMOCLINEMETADATADIR} ${THERMOCLINEEOF3DFNAME}

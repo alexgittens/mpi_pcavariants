@@ -2,6 +2,7 @@
 
 #SBATCH -N 18
 #SBATCH -t 15
+#SBATCH -C haswell
 #SBATCH -p debug
 #SBATCH --qos=premium
 

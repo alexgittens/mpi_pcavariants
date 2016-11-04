@@ -2,6 +2,7 @@
 #include "mpi.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "cblas.h"
 #include "lapacke.h"
 #include <math.h>
