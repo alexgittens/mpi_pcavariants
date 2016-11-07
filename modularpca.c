@@ -18,9 +18,11 @@
 /*
 #define MAX_MATVECPRODS 10000000
 #define MAX_RESTARTS 100000
+#define CONVERGENCE_TOL 1e-13
 */
 #define MAX_MATVECPRODS INT_MAX
 #define MAX_RESTARTS INT_MAX
+#define CONVERGENCE_TOL 1e-11
 
 int main(int argc, char **argv) {
 
@@ -121,7 +123,7 @@ int main(int argc, char **argv) {
     /* Define ARPACK working variables and parameters*/
     int ido = 0;
     int ncv = 2*numeigs > numcols ? numcols : 2*numeigs; // ncv > nev and ncv < n (but ncv >= 2*nev recommended)
-    double tol = 1e-13;
+    double tol = CONVERGENCE_TOL;
     double * resid = (double *) malloc( numcols * sizeof(double));
     double * v = (double *) malloc(numcols * ncv *sizeof(double));
     int iparam[11] = {1, 0, 30, 1, 0, 0, 1, 0, 0, 0, 0};
