@@ -38,6 +38,7 @@ def writeEOFs(outDest, latGrid, lonGrid, numdepths, dates, mapToLocations, prepr
                         eof[depth, lat, lon] = vector[curWriteIndexOffset]
                         curWriteIndexOffset += 1
                     curIndex += 1
+        return eof
 
     rootgrp = netCDF4.Dataset(outDest, "w", format="NETCDF4")
 

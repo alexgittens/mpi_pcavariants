@@ -256,7 +256,6 @@ void writeSVD(char * outfname, distGatherInfo *eigInfo, double * U, double * V, 
         exit(-1);
     }
 
-
     hsize_t dims[2];
     dims[0] = eigInfo->numrows;
     dims[1] = eigInfo->numeigs;

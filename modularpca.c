@@ -7,6 +7,7 @@
 #include "lapacke.h"
 #include <math.h>
 #include "pca.h"
+#include <limits.h>
 
 // NB: CBLAS has nonconstant overhead, because after operations, it stores the output in row major
 // TODO : use BLAS level 2 to compute the matrix-vector products!
@@ -14,8 +15,12 @@
 // distributed matrix-vector products is to allow the matrix to be fit in memory, so we should make ourselves memory-limited)
 // TODO : use memory-aligned mallocs
 
-#define MAX_MATVECPRODS 100000
+/*
+#define MAX_MATVECPRODS 10000000
 #define MAX_RESTARTS 100000
+*/
+#define MAX_MATVECPRODS INT_MAX
+#define MAX_RESTARTS INT_MAX
 
 int main(int argc, char **argv) {
 
@@ -256,7 +261,7 @@ int main(int argc, char **argv) {
 
         // Write the output
         printf("Writing the output of the SVD to file\n");
-        writeSVD(outfname, eigInfo, U, V, singvals, meanVec, rowWeights);
+        writeSVD(outfname, eigInfo, U, finalV, singvals, meanVec, rowWeights);
 
         free(U);
         free(VT);
