@@ -8,6 +8,7 @@
 #include <math.h>
 #include "pca.h"
 #include <limits.h>
+#include <stdbool.h>
 
 // NB: CBLAS has nonconstant overhead, because after operations, it stores the output in row major
 // TODO : use BLAS level 2 to compute the matrix-vector products!
@@ -18,11 +19,10 @@
 /*
 #define MAX_MATVECPRODS 10000000
 #define MAX_RESTARTS 100000
-#define CONVERGENCE_TOL 1e-13
 */
 #define MAX_MATVECPRODS INT_MAX
 #define MAX_RESTARTS INT_MAX
-#define CONVERGENCE_TOL 1e-11
+#define CONVERGENCE_TOL 1e-13
 
 int main(int argc, char **argv) {
 
@@ -156,28 +156,38 @@ int main(int argc, char **argv) {
     int numMatVecProds = 0;
 	double tgrammv = 0., grammvstr, grammvstp;
 	double tarpk = 0., arpkstr, arpkstp;
-	while(numMatVecProds < MAX_MATVECPRODS) {
-            if (ido == 1 || ido == -1) {
-				grammvstr = MPI_Wtime();
-                distributedGramianVecProd(localRowChunk, vector, matInfo, scratchSpace);
-				grammvstp = MPI_Wtime();
-				tgrammv += grammvstp - grammvstr;
-				arpkstr = MPI_Wtime();
-                if (mpi_rank == 0) {
-					cblas_dcopy(numcols, vector, 1, workd + ipntr[1] - 1, 1); // y = A x
-                    dsaupd_(&ido, &bmat, &numcols, which,
-                            &numeigs, &tol, resid,
-                            &ncv, v, &numcols,
-                            iparam, ipntr, workd,
-                            workl, &lworkl, &arpack_info);
-                    cblas_dcopy(numcols, workd + ipntr[0] - 1, 1, vector, 1);
+    bool continueFlag = true;
+	while(numMatVecProds < MAX_MATVECPRODS && continueFlag) {
+        if(numMatVecProds % 100 == 0 && mpi_rank == 0) {
+            printf("Computed %d matrix-vector products against the grammian\n", numMatVecProds);
+        }
+        if (ido == 1 || ido == -1) {
+            grammvstr = MPI_Wtime();
+            distributedGramianVecProd(localRowChunk, vector, matInfo, scratchSpace);
+            grammvstp = MPI_Wtime();
+            tgrammv += grammvstp - grammvstr;
+            arpkstr = MPI_Wtime();
+            if (mpi_rank == 0) {
+                cblas_dcopy(numcols, vector, 1, workd + ipntr[1] - 1, 1); // y = A x
+                dsaupd_(&ido, &bmat, &numcols, which,
+                        &numeigs, &tol, resid,
+                        &ncv, v, &numcols,
+                        iparam, ipntr, workd,
+                        workl, &lworkl, &arpack_info);
+                cblas_dcopy(numcols, workd + ipntr[0] - 1, 1, vector, 1);
+                if (iparam[4] < numeigs) {
+                    continueFlag = true;
+                } else {
+                    continueFlag = false;
                 }
-                MPI_Bcast(vector, numcols, MPI_DOUBLE, 0, comm); 
             }
-            MPI_Bcast(&ido, 1, MPI_INTEGER, 0, comm);
-			arpkstp = MPI_Wtime();
-			tarpk += arpkstp - arpkstr;
-    	numMatVecProds++;
+            MPI_Bcast(vector, numcols, MPI_DOUBLE, 0, comm); 
+            MPI_Bcast(&continueFlag, 1, MPI_C_BOOL, 0, comm);
+        }
+        MPI_Bcast(&ido, 1, MPI_INTEGER, 0, comm);
+        arpkstp = MPI_Wtime();
+        tarpk += arpkstp - arpkstr;
+        numMatVecProds++;
 	}
 
     if (mpi_rank == 0) {

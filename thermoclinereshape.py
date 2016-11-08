@@ -9,7 +9,7 @@ import csv, sys, h5py, netCDF4
 FILLVALUE = -999
 OFFSET = 9*360*720 # thermocline extraction skipped the first 9 levels
 
-def main(inSource, preprocessMethod, metadataDir, outDest):
+def main(inSource, preprocessMethod, metadataFname, outDest):
 
     fin = h5py.File(inSource, "r")
     U = fin["U"][:]
@@ -17,12 +17,17 @@ def main(inSource, preprocessMethod, metadataDir, outDest):
     S = fin["S"][:]
     rowMeans = fin["rowMeans"][:]
 
-    latGrid = np.array(map(float, open(metadataDir + "/latList.lst").readlines()))
-    lonGrid = np.array(map(float, open(metadataDir + "/lonList.lst").readlines()))
-    depths = np.array(map(float, open(metadataDir + "/depthList.lst").readlines()))
+    md = np.load(metadataFname)
+    latGrid = np.array(md["latList"])
+    lonGrid = np.array(md["lonList"])
+    depths = np.array(md["depthList"])
+    dates = map("".join, md["timeStamps"])
+    mapToLocations = np.array(md["observedLocations"])
 
-    dates = np.array(map(lambda x: list(x.rstrip()), open(metadataDir + "/columnDates.lst").readlines()))
-    mapToLocations = np.array(map(int, open(metadataDir + "/observedLocations.lst").readlines()))
+    # reorder time series so columns are increasing in time, left-to-right
+    increasingDateIndices = np.argsort(dates)
+    V = V[increasingDateIndices, :]
+    dates = np.array(dates)[increasingDateIndices]
 
     writeEOFs(outDest, latGrid, lonGrid, depths, dates, mapToLocations,
             preprocessMethod, rowMeans, U, S, V)
@@ -75,6 +80,6 @@ def writeEOFs(outDest, latGrid, lonGrid, depths, dates, mapToLocations, preproce
 
 inSource = sys.argv[1]
 preprocessMethod = sys.argv[2]
-metadataDir = sys.argv[3]
+metadataFname = sys.argv[3]
 outDest = sys.argv[4]
-main(inSource, preprocessMethod, metadataDir, outDest)
+main(inSource, preprocessMethod, metadataFname, outDest)
