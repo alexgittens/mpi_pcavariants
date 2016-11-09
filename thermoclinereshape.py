@@ -58,12 +58,12 @@ def writeEOFs(outDest, latGrid, lonGrid, depths, dates, mapToLocations, preproce
     depthDim = rootgrp.createDimension("depth", len(depths))
     eofsDim = rootgrp.createDimension("eofs", S.shape[0])
     datesDim = rootgrp.createDimension("dates", dates.shape[0])
-    datelengthDim = rootgrp.createDimension("lengthofdates", dates.shape[1])
+    datelengthDim = rootgrp.createDimension("lengthofdates", len(dates[0]))
 
     rootgrp.createVariable("lat", latGrid.dtype, ("lat",))[:] = latGrid
     rootgrp.createVariable("lon", lonGrid.dtype, ("lon",))[:] = lonGrid
     rootgrp.createVariable("depth", depths.dtype, ("depth",))[:] = depths
-    rootgrp.createVariable("coldates", 'S1', ("dates", "lengthofdates"))[:] = dates
+    rootgrp.createVariable("coldates", 'S1', ("dates", "lengthofdates"))[:] = map(list, dates)
     rootgrp.createVariable("temporalEOFs", V.dtype, ("eofs", "dates"))[:] = V.T
     rootgrp.createVariable("singvals", S.dtype, ("eofs",))[:] = S
     rootgrp.createVariable("meanTemps", rowMeans.dtype, ("depth", "lat", "lon"), fill_value = FILLVALUE)[:] = toEOF(rowMeans)

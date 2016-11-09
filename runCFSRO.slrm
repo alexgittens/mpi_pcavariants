@@ -1,0 +1,10 @@
+#!/bin/bash -l
+
+#SBATCH -N 40
+#SBATCH -t 20
+#SBATCH -C haswell
+#SBATCH -p debug
+#SBATCH --qos=premium
+
+bash
+make cfsro

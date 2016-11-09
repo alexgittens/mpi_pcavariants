@@ -1,9 +1,10 @@
 a.out
-eofs.hdf5
-out.hdf5
-3d.nc
+*.hdf5
+*.h5
+*.nc
 project/
 target/
+logs/
 largeeofs*
 pca
 modularpca
