@@ -36,7 +36,7 @@ def writeEOFs(outDest, latGrid, lonGrid, depths, dates, mapToLocations, preproce
 
     @jit
     def toEOF(vector):
-        eof = -999*np.ones((len(depths), len(latGrid), len(lonGrid)), vector.dtype)
+        eof = -FILL_VALUE*np.ones((len(depths), len(latGrid), len(lonGrid)), vector.dtype)
         curIndex = OFFSET
         curWriteIndexOffset = 0
 

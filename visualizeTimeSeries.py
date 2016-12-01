@@ -19,5 +19,5 @@ for pcnum in np.arange(timeSeries.shape[0]):
     plt.title("time series for eof {0}".format(pcnum + 1))
     plt.savefig("{0}TimeSeries{1}.pdf".format(outBaseName, pcnum + 1))
     plt.clf()
-    print("Wrote time series {0}/{1}".format(pcnum, timeSeries.shape[0]))
+    print("Wrote time series {0}/{1}".format(pcnum + 1, timeSeries.shape[0]))
 
