@@ -5,6 +5,23 @@
 /*  MPI-based functions for doing various shared memory matrix computations  */
 /*******************************************************************************************/
 
+// computes the frobenius norm of A, returns it in frobnorm
+void computeFrobNorm(const double *localRowChunk, double * frobnorm, const distMatrixInfo *matInfo) {
+    int mpi_rank = matInfo->mpi_rank;
+    int numcols = matInfo->numcols;
+    int localrows = matInfo->localrows;
+    MPI_Comm *comm = matInfo->comm;
+    double frobnormsquared;
+
+    *frobnorm = LAPACKE_dlange(LAPACK_ROW_MAJOR, 'F', localrows, numcols, localRowChunk, numcols);
+    frobnormsquared = pow(*frobnorm, 2);
+    MPI_Reduce(&frobnormsquared, frobnorm, 1, MPI_DOUBLE, MPI_SUM, 0, *comm);
+
+    if (mpi_rank == 0) {
+        *frobnorm = sqrt(*frobnorm);
+    }
+}
+
 // computes means of the rows of A, subtracts them from A, and returns them in meanVec on the root process
 // assumes memory has already been allocated for meanVec
 void computeAndSubtractRowMeans(double *localRowChunk, double *meanVec, distMatrixInfo *matInfo) {

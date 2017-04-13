@@ -36,7 +36,7 @@ all: modular
 
 modular: computations.c io.c pca.h modularpca.c 
 	module load cray-hdf5-parallel && \
-	cc -std=c99 -g -o modularpca modularpca.c computations.c io.c -larpack -I. -L.
+	cc -std=c99 -g -o modularpca modularpca.c computations.c io.c -larpack -lm -I. -L. 
 
 cfsro: modular
 	#module load python cray-hdf5-parallel && \

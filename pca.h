@@ -2,6 +2,7 @@
 #define PCA_HEADER_SEEN
 #include "mpi.h"
 #include "lapacke.h"
+#include <math.h>
 
 /*********************************************************
  * Auxiliary structures
@@ -77,9 +78,15 @@ lapack_int LAPACKE_dgesdd(int matrix_layout, char jobz, lapack_int m,
     lapack_int n, double * a, lapack_int lda, double * s, double * u,
     lapack_int ldu, double * vt, lapack_int ldvt);
 
+double LAPACKE_dlange(int matrix_layout, char norm, lapack_int m, 
+    lapack_int n, const double * a, lapack_int lda);
+
 /*********************************************************
  * MPI-based matrix computation routines
  * *******************************************************/
+
+/* computes frobnorm(A) */
+void computeFrobNorm(const double A[], double * frobnorm, const distMatrixInfo *matInfo);
 
 /* computes C = A'*(A*Omega) = A*Scratch , so Scratch must have size rowsA*colsOmega */
 void multiplyGramianChunk(const double A[], const double Omega[], double C[],

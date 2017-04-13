@@ -100,6 +100,15 @@ int main(int argc, char **argv) {
         printf("Time to preprocess the data (center rows and weight rows by sqrt(cos(lat))): %f\n", preprocessingTime);
     }
 
+    double frobnorm, tcompfrobstr, tcompfrobstp;
+    tcompfrobstr = MPI_Wtime();
+    computeFrobNorm(localRowChunk, &frobnorm, matInfo);
+    tcompfrobstp = MPI_Wtime();
+    if (mpi_rank == 0) {
+        printf("Time to compute Frobnenius norm of A: %f\n", tcompfrobstp - tcompfrobstr);
+        printf("Frobenius norm of A: %g\n", frobnorm);
+    }
+
     /* Allocate space for the vector used in Lanczos iterations and the (local to this process) scratch matrices used 
      * when computing the Gram-vector product */
     double * vector = (double *) malloc( numcols * sizeof(double));
@@ -253,7 +262,6 @@ int main(int argc, char **argv) {
 		printf("Time to compute AV: %f\n", tcompavstp - tcompavstr);
     }
 
-
     // dgesdd returns its singular values in descending order
     // note that the right singular vectors of AV should by definition be the identity 
     if (mpi_rank == 0) {
@@ -300,7 +308,7 @@ int main(int argc, char **argv) {
 
     totalTime = MPI_Wtime() - totalTime;
 	if(mpi_rank == 0) {
-		printf("Total PCA elapsed time: %f\n", totalTime);
+		printf("Total PCA elapsed time (including Frob norm calculation): %f\n", totalTime);
     }
 	MPI_Finalize();
     return 0;
